@@ -1,0 +1,63 @@
+#!/bin/bash
+
+# NUT upssched-cmd script for UPS Orchestrator
+
+set -u
+
+# Load .env file if it exists
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    source "$ENV_FILE"
+    set +a
+fi
+
+PORT="${UPS_SERVER_PORT:-8787}"
+API_BASE="http://127.0.0.1:$PORT"
+TOKEN="${UPS_SHARED_TOKEN:-change-me}"
+
+EVENT="${1:-}"
+
+post_event() {
+    local event="$1"
+
+    curl -sS -X POST \
+        -H "X-UPS-Token: $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"event\":\"$event\"}" \
+        "$API_BASE/api/ups/event"
+}
+
+shutdown_homeserver() {
+    if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+        /sbin/shutdown -h now
+        return $?
+    fi
+    sudo -n /sbin/shutdown -h now
+}
+
+case "$EVENT" in
+    ONBATT)
+        post_event "ONBATT"
+        ;;
+
+    ONLINE)
+        post_event "ONLINE"
+        ;;
+
+    LOWBATT)
+        post_event "LOWBATT"
+        sleep 5
+        shutdown_homeserver
+        ;;
+
+    desktop_suspend_due)
+        post_event "desktop_suspend_due"
+        ;;
+
+    *)
+        echo "Unknown event: $EVENT" >&2
+        exit 1
+        ;;
+esac

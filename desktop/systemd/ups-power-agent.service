@@ -1,0 +1,19 @@
+[Unit]
+Description=UPS Power Event Agent
+After=network-online.target dbus.service
+Wants=network-online.target
+
+[Service]
+# Use absolute path to python and power_agent.py
+ExecStart=/opt/ups-orchestrator/desktop/venv/bin/python /opt/ups-orchestrator/desktop/app/power_agent.py
+Restart=always
+RestartSec=5
+EnvironmentFile=-/opt/ups-orchestrator/desktop/.env
+Type=simple
+
+# Signal handling for clean exit
+KillSignal=SIGTERM
+SendSIGKILL=yes
+
+[Install]
+WantedBy=multi-user.target
