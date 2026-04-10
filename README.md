@@ -49,10 +49,117 @@ When the battery is critical, the server forces an immediate shutdown of both it
 
 ---
 
+---
+
+## NUT (Network UPS Tools) Setup
+
+To connect your UPS to the system, you need to install and configure `nut` on the **Home Server**.
+
+### 1. Installation
+
+On Fedora/RHEL:
+```bash
+sudo dnf install nut
+```
+
+On Debian/Ubuntu:
+```bash
+sudo apt update
+sudo apt install nut nut-client nut-server
+```
+
+### 2. Basic Configuration
+
+Edit the following files in `/etc/nut/`:
+
+#### `nut.conf`
+Sets the operation mode.
+```ini
+MODE=netserver
+```
+
+#### `ups.conf`
+Defines your UPS driver and port. Most modern USB UPS units use `usbhid-ups`.
+```ini
+[mecups]
+    driver = nutdrv_qx
+    port = auto
+    vendorid = 0001
+    productid = 0000
+    langid_fix = 0x409
+    desc = "Makelsan Lion 2200VA"
+
+```
+
+#### `upsd.conf`
+Configures the `upsd` daemon to listen for local and remote connections.
+```ini
+LISTEN 127.0.0.1 3493
+LISTEN 0.0.0.0 3493
+```
+
+#### `upsd.users`
+Defines users that can monitor or manage the UPS.
+```ini
+[upsmon]
+    password  = mypass
+    upsmon master
+```
+
+### 3. Monitoring & Scheduler Configuration
+
+#### `upsmon.conf`
+Monitors the UPS and defines the command to run on events.
+```ini
+MONITOR myups@localhost 1 upsmon mypass master
+NOTIFYCMD /sbin/upssched
+NOTIFYFLAG ONBATT EXEC+SYSLOG
+NOTIFYFLAG ONLINE EXEC+SYSLOG
+NOTIFYFLAG LOWBATT EXEC+SYSLOG
+```
+
+#### `upssched.conf`
+The scheduler that executes our scripts. You can use the provided template in the project:
+```bash
+# Link the project's config to /etc/nut/upssched.conf
+sudo ln -sf /opt/ups-orchestrator/server/scripts/upssched.conf /etc/nut/upssched.conf
+```
+
+### 4. Apply Changes
+
+Restart the services to apply configuration:
+```bash
+sudo systemctl restart nut-server nut-client
+```
+
+Confirm synchronization:
+```bash
+upsc myups@localhost
+```
+
+---
+
+## Integration with UPS Orchestrator
+
+The server uses `server/scripts/upssched-cmd` to process events from NUT. Ensure the paths in `/etc/nut/upssched.conf` are correct and the script has execution permissions.
+
+```bash
+chmod +x /opt/ups-orchestrator/server/scripts/upssched-cmd
+```
+
+---
+
 ## Installation & Configuration
 
 ### 1. Server Setup
 ```bash
+# Create and activate virtual environment
+python -m venv server/venv
+source server/venv/bin/activate
+
+# Install dependencies
+pip install -r server/requirements.txt
+
 # Configuration
 cp server/.env.example server/.env
 # Edit server/.env with your settings (Token, URLs)
@@ -67,6 +174,10 @@ python server/app/server.py
 Runs on your desktop to execute commands and report system state.
 
 ```bash
+# Create and activate virtual environment
+python -m venv desktop/venv
+source desktop/venv/bin/activate
+
 # Install dependencies
 pip install -r desktop/requirements.txt
 
@@ -143,6 +254,16 @@ The desktop agent now directly handles suspend and shutdown events via DBus sign
 
 If you are using a distribution with SELinux enabled (like Fedora or RHEL), you may need to grant additional permissions.
 
+### 0. Install SELinux Utilities
+If `semanage` command is missing, install the required package:
+```bash
+# On Fedora/RHEL 8+
+sudo dnf install policycoreutils-python-utils
+
+# On RHEL 7
+sudo yum install policycoreutils-python
+```
+
 ### 1. Allow Network Ports
 By default, SELinux may block the server/agent from binding to non-standard ports.
 ```bash
@@ -168,17 +289,42 @@ sudo ausearch -m AVC -ts recent
 
 ---
 
-## Automated Testing
+## Firewall Configuration
+
+If you have `firewalld` active, you must allow traffic between the server and the desktop agent.
+
+### 1. Allow Server Port (on Home Server)
+Allow the desktop agent to send updates or receive commands on port 8787.
 ```bash
-pytest tests/
+# Allow specific agent IP
+sudo firewall-cmd --permanent --zone=public \
+  --add-rich-rule='rule family="ipv4" source address="<AGENT_IP>" port port="8787" protocol="tcp" accept'
+
+sudo firewall-cmd --reload
+```
+
+### 2. Allow Agent Port (on Desktop)
+Allow the server to poll state or push commands on port 8788.
+```bash
+# Allow specific server IP
+sudo firewall-cmd --permanent --zone=public \
+  --add-rich-rule='rule family="ipv4" source address="<SERVER_IP>" port port="8788" protocol="tcp" accept'
+
+sudo firewall-cmd --reload
+```
+
+### 3. Verification
+Check if the port is actually listening:
+```bash
+sudo ss -tulpn | grep -E "8787|8788"
 ```
 
 ---
 
-## NUT (Network UPS Tools) Integration
-
-Use `server/scripts/upssched-cmd` with `upssched`. Example `upssched.conf` in NUT:
-`/etc/ups/upssched.conf` pointing to `/opt/ups-orchestrator/server/scripts/upssched-cmd`.
+## Automated Testing
+```bash
+pytest tests/
+```
 
 ---
 
