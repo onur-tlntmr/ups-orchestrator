@@ -14,6 +14,8 @@ from config import (
     REQUEST_TIMEOUT_SHORT,
     REQUEST_TIMEOUT_LONG,
     ONBATT_SHUTDOWN_TIMEOUT,
+    UPS_NUT_NAME,
+    DESKTOP_SHUTDOWN_WAIT,
 )
 from state_store import (
     now_ts,
@@ -90,6 +92,56 @@ def push_command_to_desktop(command):
         return False
 
 
+def read_ups_var(var: str) -> str | None:
+    """Read a single variable from the local UPS via upsc."""
+    try:
+        result = subprocess.run(
+            ["upsc", UPS_NUT_NAME, var],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except FileNotFoundError:
+        logger.debug("upsc not found, skipping direct UPS query")
+    except Exception as exc:
+        logger.debug(f"upsc query for {var!r} failed: {exc}")
+    return None
+
+
+def read_ups_status() -> str | None:
+    """Return ups.status string (e.g. 'OL', 'OB', 'OB LB') or None."""
+    return read_ups_var("ups.status")
+
+
+def read_ups_battery_charge() -> int | None:
+    """Return battery charge percentage or None."""
+    raw = read_ups_var("battery.charge")
+    try:
+        return int(raw) if raw is not None else None
+    except ValueError:
+        return None
+
+
+def _wait_for_desktop_then_shutdown():
+    """Background: wait for desktop to confirm shutdown, then self-shutdown."""
+    deadline = now_ts() + DESKTOP_SHUTDOWN_WAIT
+    logger.info(f"Waiting up to {DESKTOP_SHUTDOWN_WAIT}s for desktop to shut down before self-shutdown")
+
+    while now_ts() < deadline:
+        state = get_desktop_state()
+        if state.get("status") in ("shutting_down", "offline", "suspended"):
+            logger.info(f"Desktop reported '{state.get('status')}', proceeding with server self-shutdown")
+            break
+        time.sleep(5)
+    else:
+        logger.warning("Desktop shutdown wait timed out, proceeding with server self-shutdown anyway")
+
+    logger.error("CRITICAL: running upsmon -c fsd for server self-shutdown")
+    subprocess.run(["sudo", "-n", "upsmon", "-c", "fsd"], check=False)
+
+
 def reset_state_on_startup():
     logger.info("resetting orchestrator state on startup to prevent shutdown loops")
     orch = get_orchestrator_state()
@@ -146,20 +198,75 @@ def trigger_critical_shutdown(reason):
             f"desktop is {state.get('status')}, skipping desktop shutdown command"
         )
 
-    logger.error("CRITICAL: running upsmon -c fsd")
-    subprocess.run(["sudo", "-n", "upsmon", "-c", "fsd"], check=False)
+    threading.Thread(target=_wait_for_desktop_then_shutdown, daemon=True).start()
+
+
+def _handle_ups_status_transition(ups_status: str):
+    """Derive UPS events from upsc status string and drive orchestrator state."""
+    orch = get_orchestrator_state()
+    on_battery = "OB" in ups_status
+    low_battery = "LB" in ups_status
+    on_line = "OL" in ups_status
+
+    if low_battery:
+        if orch.get("mode") != "awaiting_shutdown":
+            logger.info(f"upsc reports low battery ('{ups_status}'), triggering critical shutdown")
+            trigger_critical_shutdown("low_battery_direct")
+        return
+
+    if on_battery:
+        if orch.get("last_event") != "ONBATT":
+            logger.info(f"upsc reports on-battery ('{ups_status}'), firing ONBATT")
+            orch["last_event"] = "ONBATT"
+            if not orch.get("onbatt_since"):
+                orch["onbatt_since"] = now_ts()
+            save_orchestrator_state(orch)
+
+            state = get_desktop_state()
+            if state.get("status") in ["online"]:
+                cmd = {
+                    "id": f"state-{now_ts()}",
+                    "command": "ups_state",
+                    "payload": {"event": "ONBATT"},
+                    "status": "pending",
+                    "issued_at": now_ts(),
+                }
+                save_command(cmd)
+                push_command_to_desktop(cmd)
+        return
+
+    if on_line and orch.get("last_event") == "ONBATT":
+        logger.info(f"upsc reports back on-line ('{ups_status}'), firing ONLINE")
+        orch["mode"] = "idle"
+        orch["last_event"] = "ONLINE"
+        orch["pending_command"] = None
+        orch["suspend_deadline"] = None
+        orch["onbatt_since"] = None
+        save_orchestrator_state(orch)
+
+        cmd = get_command()
+        if cmd and cmd.get("status") == "pending":
+            cmd["status"] = "cancelled"
+            cmd["result"] = {"reason": "power_restored"}
+            cmd["ack_at"] = now_ts()
+            save_command(cmd)
 
 
 def poll_loop():
     while True:
-        # Requirement: server her koşulda 30s'de bir check etsin desktop'u
         fetch_state_from_desktop()
 
-        orch = get_orchestrator_state()
-        if orch.get("last_event") == "ONBATT" and orch.get("onbatt_since"):
-            if now_ts() - orch.get("onbatt_since") >= ONBATT_SHUTDOWN_TIMEOUT:
-                logger.info(f"{ONBATT_SHUTDOWN_TIMEOUT} seconds on battery exceeded, shutting down.")
-                trigger_critical_shutdown("on_battery_timeout")
+        # Direct UPS monitoring via upsc (USB is on this server)
+        ups_status = read_ups_status()
+        if ups_status:
+            _handle_ups_status_transition(ups_status)
+        else:
+            # upsc unavailable — fall back to timeout-based shutdown if on battery
+            orch = get_orchestrator_state()
+            if orch.get("last_event") == "ONBATT" and orch.get("onbatt_since"):
+                if now_ts() - orch.get("onbatt_since") >= ONBATT_SHUTDOWN_TIMEOUT:
+                    logger.info(f"{ONBATT_SHUTDOWN_TIMEOUT}s on battery exceeded, shutting down.")
+                    trigger_critical_shutdown("on_battery_timeout")
 
         time.sleep(UNKNOWN_POLL_INTERVAL)
 
@@ -340,6 +447,26 @@ def preflight():
             "allow": True,
         }
     )
+
+
+@APP.get("/api/ups/status")
+def ups_status():
+    require_token()
+
+    status = read_ups_status()
+    charge = read_ups_battery_charge()
+
+    if status is None:
+        return jsonify({"ok": False, "reason": "upsc_unavailable"}), 503
+
+    return jsonify({
+        "ok": True,
+        "ups": UPS_NUT_NAME,
+        "status": status,
+        "battery_charge": charge,
+        "on_battery": "OB" in status,
+        "low_battery": "LB" in status,
+    })
 
 
 @APP.post("/api/ups/event")

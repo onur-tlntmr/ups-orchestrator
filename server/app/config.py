@@ -16,3 +16,9 @@ UNKNOWN_POLL_INTERVAL = int(os.environ.get("UPS_POLL_INTERVAL", 30))
 REQUEST_TIMEOUT_SHORT = int(os.environ.get("UPS_REQUEST_TIMEOUT_SHORT", 5))
 REQUEST_TIMEOUT_LONG = int(os.environ.get("UPS_REQUEST_TIMEOUT_LONG", 30))
 ONBATT_SHUTDOWN_TIMEOUT = int(os.environ.get("UPS_ONBATT_SHUTDOWN_TIMEOUT", 600))
+
+# NUT UPS name as seen by upsc (e.g. "ups@localhost" or "myups@localhost")
+UPS_NUT_NAME = os.environ.get("UPS_NUT_NAME", "ups@localhost")
+
+# How long (seconds) to wait for desktop to confirm shutdown before self-shutting down
+DESKTOP_SHUTDOWN_WAIT = int(os.environ.get("UPS_DESKTOP_SHUTDOWN_WAIT", 60))
