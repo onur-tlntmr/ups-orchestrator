@@ -17,6 +17,9 @@ PORT="${UPS_SERVER_PORT:-8787}"
 API_BASE="http://127.0.0.1:$PORT"
 TOKEN="${UPS_SHARED_TOKEN:-change-me}"
 
+# UPS device ID as defined in ups_config.yml
+DEVICE_ID="${UPS_DEVICE_ID:-main-ups}"
+
 EVENT="${1:-}"
 
 post_event() {
@@ -26,7 +29,7 @@ post_event() {
         -H "X-UPS-Token: $TOKEN" \
         -H "Content-Type: application/json" \
         -d "{\"event\":\"$event\"}" \
-        "$API_BASE/api/ups/event"
+        "$API_BASE/api/ups/$DEVICE_ID/event"
 }
 
 shutdown_homeserver() {

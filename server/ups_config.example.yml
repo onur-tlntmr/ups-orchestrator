@@ -1,0 +1,34 @@
+# UPS Orchestrator - Device Configuration
+#
+# Copy this file to ups_config.yml and adjust for your setup.
+# Each entry in ups_devices defines one UPS and the desktop/server it protects.
+
+ups_devices:
+
+  # --- Local UPS (directly connected to this orchestrator host via USB) ---
+  - id: "main-ups"
+    nut_name: "ups@localhost"   # NUT UPS name as seen by upsc
+    local: true                 # true = read via upsc directly, shutdown via upsmon -c fsd locally
+
+    # How long to stay on battery before forcing shutdown (seconds)
+    onbatt_shutdown_timeout: 600
+
+    desktop:
+      agent_url: "http://192.168.50.2:8788"   # Desktop agent URL
+      shutdown_wait: 60                         # Seconds to wait for desktop to confirm shutdown
+
+  # --- Remote UPS (managed via SSH) ---
+  # - id: "office-ups"
+  #   nut_name: "ups@localhost"   # NUT name *on the remote host*
+  #   local: false
+  #   onbatt_shutdown_timeout: 300
+  #
+  #   ssh:
+  #     host: "192.168.50.5"      # Remote host running NUT
+  #     user: "sysadmin"
+  #     port: 22
+  #     # key_file: "/home/user/.ssh/id_rsa"  # Optional; defaults to SSH agent / default key
+  #
+  #   desktop:
+  #     agent_url: "http://192.168.50.6:8788"
+  #     shutdown_wait: 60
