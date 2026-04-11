@@ -50,12 +50,8 @@ def _poll_device(ctx: UPSContext):
     if ups_status:
         ctx.handle_ups_status_transition(ups_status)
     else:
-        orch = ctx.get_orchestrator_state()
-        if orch.get("last_event") == "ONBATT" and orch.get("onbatt_since"):
-            elapsed = now_ts() - orch["onbatt_since"]
-            if elapsed >= ctx.device.onbatt_shutdown_timeout:
-                logger.info(f"[{ctx.device.id}] {ctx.device.onbatt_shutdown_timeout}s on battery exceeded, shutting down")
-                ctx.trigger_critical_shutdown("on_battery_timeout")
+        # upsc unavailable — still drive any in-progress phase deadline forward
+        ctx.check_phase_deadline_if_monitoring()
 
 
 def poll_loop():
@@ -121,64 +117,8 @@ def ups_event(ups_id: str):
 
     payload = request.json
     event = payload.get("event")
-    state = ctx.get_desktop_state()
-    orch = ctx.get_orchestrator_state()
 
-    logger.info(f"[{ups_id}] ups event received: {event}")
-
-    if event == "LOWBATT":
-        ctx.trigger_critical_shutdown("low_battery")
-
-    elif event == "ONBATT":
-        orch["last_event"] = "ONBATT"
-        if not orch.get("onbatt_since"):
-            orch["onbatt_since"] = now_ts()
-        ctx.save_orchestrator_state(orch)
-
-        if state.get("status") == "online":
-            existing_cmd = ctx.get_command()
-            if (
-                existing_cmd
-                and existing_cmd.get("command") == "ups_state"
-                and existing_cmd.get("payload", {}).get("event") == "ONBATT"
-                and existing_cmd.get("status") == "pending"
-            ):
-                cmd = existing_cmd
-            else:
-                cmd = {
-                    "id": f"state-{now_ts()}",
-                    "command": "ups_state",
-                    "payload": {"event": "ONBATT"},
-                    "status": "pending",
-                    "issued_at": now_ts(),
-                }
-                ctx.save_command(cmd)
-            ctx.push_command_to_desktop(cmd)
-        else:
-            logger.info(f"[{ups_id}] Desktop is {state.get('status')}, ignoring ONBATT for desktop")
-
-    elif event == "desktop_suspend_due":
-        if orch.get("last_event") == "ONBATT":
-            logger.info(f"[{ups_id}] Suspend deadline reached, triggering critical shutdown")
-            ctx.trigger_critical_shutdown("desktop_suspend_deadline_reached")
-        else:
-            logger.info(f"[{ups_id}] Power restored before suspend deadline, ignoring")
-
-    elif event == "ONLINE":
-        orch["mode"] = "idle"
-        orch["last_event"] = "ONLINE"
-        orch["pending_command"] = None
-        orch["suspend_deadline"] = None
-        orch["onbatt_since"] = None
-        ctx.save_orchestrator_state(orch)
-
-        cmd = ctx.get_command()
-        if cmd and cmd.get("status") == "pending":
-            cmd["status"] = "cancelled"
-            cmd["result"] = {"reason": "power_restored"}
-            cmd["ack_at"] = now_ts()
-            ctx.save_command(cmd)
-
+    ctx.handle_event(event)
     return {"ok": True}
 
 
@@ -198,12 +138,7 @@ def update_state(ups_id: str):
     ctx.save_desktop_state(state)
     logger.info(f"[{ups_id}] state update: {state['source']} reported {state['status']}")
 
-    orch = ctx.get_orchestrator_state()
-    if state["status"] == "online" and orch.get("mode") == "awaiting_shutdown":
-        cmd = ctx.get_command()
-        if cmd and cmd.get("command") == "critical_shutdown" and cmd.get("status") == "pending":
-            logger.info(f"[{ups_id}] Desktop back online while awaiting shutdown, re-pushing command")
-            ctx.push_command_to_desktop(cmd)
+    ctx.notify_desktop_state_change(state["status"])
 
     return {"ok": True}
 

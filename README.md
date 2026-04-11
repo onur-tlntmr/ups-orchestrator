@@ -250,6 +250,97 @@ The desktop agent now directly handles suspend and shutdown events via DBus sign
 
 ---
 
+## Wake-on-LAN (ether-wake)
+
+The orchestrator can wake a suspended desktop via Wake-on-LAN before forcing a
+shutdown (used by the `desktop_suspend_wait` flow). This requires the
+`ether-wake` binary on the **server** and a network adapter on the desktop with
+WoL enabled.
+
+### 1. Install `ether-wake`
+
+On Fedora/RHEL:
+```bash
+sudo dnf install net-tools
+```
+
+On Debian/Ubuntu:
+```bash
+sudo apt update
+sudo apt install etherwake
+```
+
+On Arch:
+```bash
+sudo pacman -S net-tools
+```
+
+> The binary is named `ether-wake` on Fedora/RHEL/Arch and `etherwake` on
+> Debian/Ubuntu — the orchestrator looks for both.
+
+### 2. Allow passwordless sudo for the orchestrator user
+
+`ether-wake` needs raw socket access (root). Add a sudoers entry so the
+orchestrator can call it without a password:
+
+```bash
+sudo visudo -f /etc/sudoers.d/ups-orchestrator-wol
+```
+
+```
+# Adjust the user and binary path to match your setup
+ups-orchestrator ALL=(root) NOPASSWD: /usr/sbin/ether-wake, /usr/sbin/etherwake
+```
+
+### 3. Enable WoL on the desktop
+
+Most modern motherboards support WoL but it must be enabled in two places:
+
+**BIOS/UEFI:** Enable *Wake on LAN* / *Power on by PCI-E* / *Resume by PME*.
+
+**Linux desktop NIC:** Enable the `g` (magic packet) flag, e.g.:
+```bash
+sudo ethtool -s enp4s0 wol g
+```
+
+To make it persistent across reboots, create a systemd service or a NetworkManager dispatcher script. On Fedora/Arch with systemd-networkd you can drop a file in `/etc/systemd/network/`:
+```ini
+[Match]
+Name=enp4s0
+
+[Link]
+WakeOnLan=magic
+```
+
+Verify with:
+```bash
+sudo ethtool enp4s0 | grep Wake-on
+# Wake-on: g
+```
+
+### 4. Configure the MAC address
+
+Add the desktop's MAC address to `ups_config.yml`:
+
+```yaml
+desktop:
+  agent_url: "http://192.168.50.2:8788"
+  mac_address: "AA:BB:CC:DD:EE:FF"
+```
+
+### 5. Test
+
+From the server, manually verify the magic packet wakes the suspended desktop:
+```bash
+sudo ether-wake AA:BB:CC:DD:EE:FF
+```
+
+> If the desktop is on a different subnet, you'll also need to enable WoL
+> forwarding on the router/switch (UDP broadcast on port 9), or use a
+> directed broadcast.
+
+---
+
 ## SELinux Configuration
 
 If you are using a distribution with SELinux enabled (like Fedora or RHEL), you may need to grant additional permissions.

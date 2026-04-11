@@ -1,4 +1,5 @@
 import logging
+import shutil
 import subprocess
 import threading
 import time
@@ -13,10 +14,43 @@ from config import (
     SHARED_TOKEN,
     REQUEST_TIMEOUT_SHORT,
     REQUEST_TIMEOUT_LONG,
+    ETHER_WAKE_BIN,
 )
-from state_store import read_json, write_json, now_ts, state_is_fresh
+from state_store import read_json, write_json, now_ts
 
 logger = logging.getLogger(__name__)
+
+
+# Orchestrator state machine modes
+MODE_IDLE = "idle"
+MODE_MONITORING = "monitoring_battery"
+MODE_SHUTTING_DOWN = "shutting_down"
+
+# Phases (only meaningful in MODE_MONITORING)
+PHASE_USER_PROMPT = "user_prompt"        # desktop online → wait for user response
+PHASE_OFFLINE_WAIT = "offline_wait"      # desktop offline / no desktop → just wait
+PHASE_SUSPEND_WAIT = "suspend_wait"      # desktop suspended → wait then wake
+
+
+def send_wol(mac_address: str):
+    """Send Wake-on-LAN magic packet via the system `ether-wake` binary.
+
+    Requires `ether-wake` (or `etherwake`) to be installed and runnable as root
+    (typically via passwordless sudo). See README for installation instructions.
+    """
+    binary = ETHER_WAKE_BIN or shutil.which("ether-wake") or shutil.which("etherwake")
+    if not binary:
+        raise FileNotFoundError(
+            "ether-wake / etherwake binary not found "
+            "(set UPS_ETHER_WAKE_BIN or install net-tools / etherwake)"
+        )
+
+    cmd = ["sudo", "-n", binary, mac_address]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{binary} exited {result.returncode}: {result.stderr.strip() or result.stdout.strip()}"
+        )
 
 
 class UPSContext:
@@ -28,6 +62,8 @@ class UPSContext:
         self._desktop_state_file = self.state_dir / "desktop_state.json"
         self._command_file = self.state_dir / "command.json"
         self._orchestrator_state_file = self.state_dir / "orchestrator_state.json"
+
+        self._action_lock = threading.Lock()
 
     # -------------------------------------------------------------------------
     # State helpers
@@ -47,10 +83,11 @@ class UPSContext:
 
     def get_orchestrator_state(self) -> dict:
         return read_json(self._orchestrator_state_file, {
-            "mode": "idle",
+            "mode": MODE_IDLE,
+            "phase": None,
+            "phase_deadline": None,
+            "onbatt_since": None,
             "last_event": None,
-            "pending_command": None,
-            "suspend_deadline": None,
             "updated_at": 0,
         })
 
@@ -104,6 +141,8 @@ class UPSContext:
     # -------------------------------------------------------------------------
 
     def fetch_state_from_desktop(self) -> dict:
+        if not self.device.desktop:
+            return {}
         try:
             resp = requests.get(
                 f"{self.device.desktop.agent_url}/state",
@@ -122,6 +161,8 @@ class UPSContext:
         return {}
 
     def push_command_to_desktop(self, command: dict) -> bool:
+        if not self.device.desktop:
+            return False
         try:
             logger.info(f"[{self.device.id}] pushing {command['command']} to desktop")
             resp = requests.post(
@@ -140,11 +181,11 @@ class UPSContext:
         return False
 
     # -------------------------------------------------------------------------
-    # Shutdown logic
+    # Shutdown primitives
     # -------------------------------------------------------------------------
 
     def _self_shutdown(self):
-        """Trigger forced UPS shutdown for this device's server."""
+        """Trigger forced UPS shutdown for this device's host (server or remote)."""
         logger.error(f"[{self.device.id}] CRITICAL: triggering upsmon -c fsd")
         if self.device.local:
             subprocess.run(["sudo", "-n", "upsmon", "-c", "fsd"], check=False)
@@ -163,15 +204,15 @@ class UPSContext:
             except Exception as exc:
                 logger.error(f"[{self.device.id}] SSH shutdown failed: {exc}")
 
-    def _wait_for_desktop_then_shutdown(self):
-        wait = self.device.desktop.shutdown_wait
+    def _wait_for_desktop_then_self_shutdown(self):
+        wait = self.device.timing.desktop_shutdown_wait
         deadline = now_ts() + wait
         logger.info(f"[{self.device.id}] Waiting up to {wait}s for desktop to shut down")
 
         while now_ts() < deadline:
             state = self.get_desktop_state()
             if state.get("status") in ("shutting_down", "offline", "suspended"):
-                logger.info(f"[{self.device.id}] Desktop reported '{state.get('status')}', proceeding with server shutdown")
+                logger.info(f"[{self.device.id}] Desktop reported '{state.get('status')}', proceeding with self shutdown")
                 break
             time.sleep(5)
         else:
@@ -179,101 +220,236 @@ class UPSContext:
 
         self._self_shutdown()
 
-    def trigger_critical_shutdown(self, reason: str):
-        logger.info(f"[{self.device.id}] initiating critical shutdown, reason: {reason}")
-        orch = self.get_orchestrator_state()
-        orch["mode"] = "awaiting_shutdown"
-        self.save_orchestrator_state(orch)
+    def _make_critical_shutdown_command(self) -> dict:
+        return {
+            "id": f"shutdown-{now_ts()}",
+            "command": "critical_shutdown",
+            "status": "pending",
+            "issued_at": now_ts(),
+        }
 
-        existing_cmd = self.get_command()
-        if (
-            existing_cmd
-            and existing_cmd.get("command") == "critical_shutdown"
-            and existing_cmd.get("status") == "pending"
-        ):
-            cmd = existing_cmd
-        else:
-            cmd = {
-                "id": f"shutdown-{now_ts()}",
-                "command": "critical_shutdown",
-                "status": "pending",
-                "issued_at": now_ts(),
-            }
-            self.save_command(cmd)
-
-        state = self.get_desktop_state()
-        if state.get("status") == "online":
-            logger.info(f"[{self.device.id}] Desktop is online, pushing shutdown command")
-            threading.Thread(target=self.push_command_to_desktop, args=(cmd,), daemon=True).start()
-        else:
-            logger.info(f"[{self.device.id}] Desktop is {state.get('status')}, skipping desktop command")
-
-        threading.Thread(target=self._wait_for_desktop_then_shutdown, daemon=True).start()
+    def _make_ups_state_command(self) -> dict:
+        return {
+            "id": f"state-{now_ts()}",
+            "command": "ups_state",
+            "payload": {"event": "ONBATT"},
+            "status": "pending",
+            "issued_at": now_ts(),
+        }
 
     # -------------------------------------------------------------------------
-    # UPS status transitions (driven by poll loop)
+    # State machine entry points
     # -------------------------------------------------------------------------
 
     def handle_ups_status_transition(self, ups_status: str):
-        orch = self.get_orchestrator_state()
         on_battery = "OB" in ups_status
         low_battery = "LB" in ups_status
         on_line = "OL" in ups_status
 
+        orch = self.get_orchestrator_state()
+        mode = orch.get("mode", MODE_IDLE)
+
         if low_battery:
-            if orch.get("mode") != "awaiting_shutdown":
-                logger.info(f"[{self.device.id}] Low battery ('{ups_status}'), triggering critical shutdown")
-                self.trigger_critical_shutdown("low_battery_direct")
+            if mode != MODE_SHUTTING_DOWN:
+                logger.warning(f"[{self.device.id}] LOW BATTERY ('{ups_status}') — executing immediate action")
+                if mode != MODE_MONITORING:
+                    self._start_battery_monitoring()
+                self._execute_phase_action(reason="low_battery")
             return
 
         if on_battery:
-            if orch.get("last_event") != "ONBATT":
-                logger.info(f"[{self.device.id}] On battery ('{ups_status}'), firing ONBATT")
-                orch["last_event"] = "ONBATT"
-                if not orch.get("onbatt_since"):
-                    orch["onbatt_since"] = now_ts()
-                self.save_orchestrator_state(orch)
-
-                state = self.get_desktop_state()
-                if state.get("status") == "online":
-                    cmd = {
-                        "id": f"state-{now_ts()}",
-                        "command": "ups_state",
-                        "payload": {"event": "ONBATT"},
-                        "status": "pending",
-                        "issued_at": now_ts(),
-                    }
-                    self.save_command(cmd)
-                    self.push_command_to_desktop(cmd)
+            if mode == MODE_IDLE:
+                self._start_battery_monitoring()
+            elif mode == MODE_MONITORING:
+                self._check_phase_deadline()
             return
 
-        if on_line and orch.get("last_event") == "ONBATT":
-            logger.info(f"[{self.device.id}] Back on-line ('{ups_status}'), firing ONLINE")
-            orch["mode"] = "idle"
-            orch["last_event"] = "ONLINE"
-            orch["pending_command"] = None
-            orch["suspend_deadline"] = None
-            orch["onbatt_since"] = None
+        if on_line:
+            if mode != MODE_IDLE:
+                self._reset_to_idle("power_restored")
+            return
+
+    def check_phase_deadline_if_monitoring(self):
+        """Called when upsc is unavailable — still drive the timer forward."""
+        orch = self.get_orchestrator_state()
+        if orch.get("mode") == MODE_MONITORING:
+            self._check_phase_deadline()
+
+    def handle_event(self, event: str):
+        """Handle a NUT-pushed event (from upssched-cmd)."""
+        logger.info(f"[{self.device.id}] event received: {event}")
+        orch = self.get_orchestrator_state()
+        mode = orch.get("mode", MODE_IDLE)
+
+        if event == "LOWBATT":
+            if mode != MODE_SHUTTING_DOWN:
+                if mode != MODE_MONITORING:
+                    self._start_battery_monitoring()
+                self._execute_phase_action(reason="low_battery_event")
+
+        elif event == "ONBATT":
+            if mode == MODE_IDLE:
+                self._start_battery_monitoring()
+
+        elif event == "ONLINE":
+            if mode != MODE_IDLE:
+                self._reset_to_idle("power_restored_event")
+
+        elif event == "desktop_suspend_due":
+            if mode == MODE_MONITORING:
+                self._execute_phase_action(reason="suspend_due_event")
+
+    def notify_desktop_state_change(self, new_status: str):
+        """Called from /update-state when the desktop reports a new state."""
+        orch = self.get_orchestrator_state()
+        if orch.get("mode") != MODE_MONITORING:
+            return
+
+        if new_status in ("offline", "shutting_down"):
+            # User shut down successfully → no point keeping the server up
+            logger.info(f"[{self.device.id}] Desktop reported '{new_status}' during battery monitoring → self shutdown")
+            with self._action_lock:
+                cur = self.get_orchestrator_state()
+                if cur.get("mode") == MODE_SHUTTING_DOWN:
+                    return
+                cur["mode"] = MODE_SHUTTING_DOWN
+                self.save_orchestrator_state(cur)
+            threading.Thread(target=self._self_shutdown, daemon=True).start()
+            return
+
+        if new_status == "suspended" and orch.get("phase") == PHASE_USER_PROMPT:
+            logger.info(f"[{self.device.id}] Desktop suspended during prompt → switching to suspend_wait phase")
+            orch["phase"] = PHASE_SUSPEND_WAIT
+            orch["phase_deadline"] = now_ts() + self.device.timing.desktop_suspend_wait
             self.save_orchestrator_state(orch)
 
-            cmd = self.get_command()
-            if cmd and cmd.get("status") == "pending":
-                cmd["status"] = "cancelled"
-                cmd["result"] = {"reason": "power_restored"}
-                cmd["ack_at"] = now_ts()
-                self.save_command(cmd)
+    # -------------------------------------------------------------------------
+    # Internal state transitions
+    # -------------------------------------------------------------------------
+
+    def _start_battery_monitoring(self):
+        timing = self.device.timing
+        state = self.get_desktop_state()
+        desktop_status = state.get("status") if self.device.desktop else None
+
+        orch = self.get_orchestrator_state()
+        orch["mode"] = MODE_MONITORING
+        orch["last_event"] = "ONBATT"
+        orch["onbatt_since"] = now_ts()
+
+        if not self.device.desktop or desktop_status not in ("online", "suspended"):
+            # No desktop, offline, unknown, or unreachable → just wait
+            orch["phase"] = PHASE_OFFLINE_WAIT
+            orch["phase_deadline"] = now_ts() + timing.desktop_offline_wait
+        elif desktop_status == "suspended":
+            orch["phase"] = PHASE_SUSPEND_WAIT
+            orch["phase_deadline"] = now_ts() + timing.desktop_suspend_wait
+        else:  # online
+            orch["phase"] = PHASE_USER_PROMPT
+            orch["phase_deadline"] = now_ts() + timing.desktop_online_prompt_wait
+
+        self.save_orchestrator_state(orch)
+        remaining = orch["phase_deadline"] - now_ts()
+        logger.info(f"[{self.device.id}] Started battery monitoring — phase={orch['phase']}, deadline in {remaining}s")
+
+        # If we entered user_prompt, send the notification immediately
+        if orch["phase"] == PHASE_USER_PROMPT:
+            cmd = self._make_ups_state_command()
+            self.save_command(cmd)
+            self.push_command_to_desktop(cmd)
+
+    def _check_phase_deadline(self):
+        orch = self.get_orchestrator_state()
+        deadline = orch.get("phase_deadline") or 0
+        if now_ts() < deadline:
+            return
+        self._execute_phase_action(reason="phase_deadline")
+
+    def _execute_phase_action(self, reason: str):
+        with self._action_lock:
+            orch = self.get_orchestrator_state()
+            if orch.get("mode") == MODE_SHUTTING_DOWN:
+                return  # already in flight
+
+            phase = orch.get("phase") or PHASE_OFFLINE_WAIT
+            logger.info(f"[{self.device.id}] Executing phase action — phase={phase}, reason={reason}")
+
+            orch["mode"] = MODE_SHUTTING_DOWN
+            self.save_orchestrator_state(orch)
+
+        if phase == PHASE_USER_PROMPT:
+            threading.Thread(target=self._action_force_shutdown_desktop, daemon=True).start()
+        elif phase == PHASE_SUSPEND_WAIT:
+            threading.Thread(target=self._action_wake_then_shutdown, daemon=True).start()
+        else:  # PHASE_OFFLINE_WAIT
+            threading.Thread(target=self._self_shutdown, daemon=True).start()
 
     # -------------------------------------------------------------------------
-    # Startup
+    # Phase action workers
     # -------------------------------------------------------------------------
+
+    def _action_force_shutdown_desktop(self):
+        cmd = self._make_critical_shutdown_command()
+        self.save_command(cmd)
+        self.push_command_to_desktop(cmd)
+        self._wait_for_desktop_then_self_shutdown()
+
+    def _action_wake_then_shutdown(self):
+        mac = self.device.desktop.mac_address if self.device.desktop else None
+        if mac:
+            try:
+                logger.info(f"[{self.device.id}] Sending WoL to {mac}")
+                send_wol(mac)
+            except Exception as exc:
+                logger.error(f"[{self.device.id}] WoL failed: {exc}")
+        else:
+            logger.warning(f"[{self.device.id}] No MAC configured, skipping WoL")
+
+        # Wait for desktop to come online so it can shut down gracefully
+        deadline = now_ts() + self.device.timing.wake_online_timeout
+        while now_ts() < deadline:
+            state = self.fetch_state_from_desktop()
+            if state.get("status") == "online":
+                logger.info(f"[{self.device.id}] Desktop is online after wake, pushing shutdown")
+                break
+            time.sleep(5)
+        else:
+            logger.warning(f"[{self.device.id}] Desktop did not come online after WoL, pushing shutdown anyway")
+
+        cmd = self._make_critical_shutdown_command()
+        self.save_command(cmd)
+        self.push_command_to_desktop(cmd)
+        self._wait_for_desktop_then_self_shutdown()
+
+    # -------------------------------------------------------------------------
+    # Reset / startup
+    # -------------------------------------------------------------------------
+
+    def _reset_to_idle(self, reason: str):
+        logger.info(f"[{self.device.id}] Resetting to idle — reason: {reason}")
+        orch = self.get_orchestrator_state()
+        orch["mode"] = MODE_IDLE
+        orch["phase"] = None
+        orch["phase_deadline"] = None
+        orch["last_event"] = "ONLINE"
+        orch["onbatt_since"] = None
+        self.save_orchestrator_state(orch)
+
+        cmd = self.get_command()
+        if cmd and cmd.get("status") == "pending":
+            cmd["status"] = "cancelled"
+            cmd["result"] = {"reason": reason}
+            cmd["ack_at"] = now_ts()
+            self.save_command(cmd)
 
     def reset_state_on_startup(self):
         logger.info(f"[{self.device.id}] Resetting orchestrator state on startup")
         orch = self.get_orchestrator_state()
-        orch["mode"] = "idle"
+        orch["mode"] = MODE_IDLE
+        orch["phase"] = None
+        orch["phase_deadline"] = None
         orch["last_event"] = "ONLINE"
         orch["onbatt_since"] = None
-        orch["suspend_deadline"] = None
         self.save_orchestrator_state(orch)
 
         cmd = self.get_command()
