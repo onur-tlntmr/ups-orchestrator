@@ -210,8 +210,8 @@ chmod +x /opt/ups-orchestrator/server/scripts/upssched-cmd
 ### 1. Server Setup
 ```bash
 # Create and activate virtual environment
-python -m venv server/venv
-source server/venv/bin/activate
+python -m venv server/.venv
+source server/.venv/bin/activate
 
 # Install dependencies
 pip install -r server/requirements.txt
@@ -231,8 +231,8 @@ Runs on your desktop to execute commands and report system state.
 
 ```bash
 # Create and activate virtual environment
-python -m venv desktop/venv
-source desktop/venv/bin/activate
+python -m venv desktop/.venv
+source desktop/.venv/bin/activate
 
 # Install dependencies
 pip install -r desktop/requirements.txt

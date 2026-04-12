@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 # Use absolute path to python and power_agent.py
-ExecStart=/opt/ups-orchestrator/desktop/venv/bin/python /opt/ups-orchestrator/desktop/app/power_agent.py
+ExecStart=/opt/ups-orchestrator/desktop/.venv/bin/python /opt/ups-orchestrator/desktop/app/power_agent.py
 Restart=always
 RestartSec=5
 EnvironmentFile=-/opt/ups-orchestrator/desktop/.env

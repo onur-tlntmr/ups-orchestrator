@@ -10,8 +10,8 @@ Type=simple
 WorkingDirectory=/opt/ups-orchestrator/desktop
 EnvironmentFile=/opt/ups-orchestrator/desktop/.env
 
-ExecStart=/opt/ups-orchestrator/desktop/venv/bin/python /opt/ups-orchestrator/desktop/app/agent.py
-ExecStop=/opt/ups-orchestrator/desktop/venv/bin/python /opt/ups-orchestrator/desktop/app/send_state.py offline
+ExecStart=/opt/ups-orchestrator/desktop/.venv/bin/python /opt/ups-orchestrator/desktop/app/agent.py
+ExecStop=/opt/ups-orchestrator/desktop/.venv/bin/python /opt/ups-orchestrator/desktop/app/send_state.py offline
 
 Restart=always
 RestartSec=2
