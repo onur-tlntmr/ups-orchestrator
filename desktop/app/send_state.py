@@ -8,11 +8,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 try:
-    from config import SERVER_BASE, SHARED_TOKEN
+    from config import SERVER_BASE, SHARED_TOKEN, UPS_DEVICE_ID
 except ImportError:
     # Fallback if config is not in path
     SERVER_BASE = "http://192.168.50.10:8787"
     SHARED_TOKEN = "change-me"
+    UPS_DEVICE_ID = "server-ups"
 
 if len(sys.argv) < 2:
     print(f"Usage: {sys.argv[0]} <status>")
@@ -25,7 +26,7 @@ logger.info(f"Sending state '{status}' for {hostname} to {SERVER_BASE}")
 
 try:
     resp = requests.post(
-        f"{SERVER_BASE}/api/desktop/update-state",
+        f"{SERVER_BASE}/api/ups/{UPS_DEVICE_ID}/desktop/update-state",
         headers={"X-UPS-Token": SHARED_TOKEN},
         json={
             "hostname": hostname,

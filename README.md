@@ -228,10 +228,16 @@ python server/app/server.py
 ### 2. Desktop Agent Setup
 
 Runs on your desktop to execute commands and report system state.
+The power agent (`power_agent.py`) uses DBus via `pydbus` / GObject
+Introspection, which requires system packages **before** creating the venv.
 
 ```bash
-# Create and activate virtual environment
-python -m venv desktop/.venv
+# Install system dependencies for DBus/GObject (required by power_agent.py)
+sudo dnf install python3-gobject    # Fedora/RHEL
+sudo apt install python3-gi         # Debian/Ubuntu
+
+# Create venv with access to system site-packages (needed for gi/pydbus)
+python -m venv --system-site-packages desktop/.venv
 source desktop/.venv/bin/activate
 
 # Install dependencies

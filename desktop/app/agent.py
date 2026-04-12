@@ -12,6 +12,7 @@ import requests
 
 from config import (
     SERVER_BASE,
+    UPS_DEVICE_ID,
     SHARED_TOKEN,
     AGENT_PORT,
     REQUEST_TIMEOUT_NORMAL,
@@ -66,7 +67,7 @@ def current_state() -> dict:
 def preflight(command_id: str, command_name: str) -> PreflightStatus:
     try:
         resp = requests.post(
-            f"{SERVER_BASE}/api/desktop/command/preflight",
+            f"{SERVER_BASE}/api/ups/{UPS_DEVICE_ID}/desktop/command/preflight",
             headers=HEADERS,
             json={"id": command_id, "command": command_name},
             timeout=REQUEST_TIMEOUT_NORMAL,
@@ -84,7 +85,7 @@ def preflight(command_id: str, command_name: str) -> PreflightStatus:
 def ack(command_id: str, status: str, result: dict) -> None:
     try:
         resp = requests.post(
-            f"{SERVER_BASE}/api/desktop/command/ack",
+            f"{SERVER_BASE}/api/ups/{UPS_DEVICE_ID}/desktop/command/ack",
             headers=HEADERS,
             json={"id": command_id, "status": status, "result": result},
             timeout=REQUEST_TIMEOUT_NORMAL,
@@ -291,7 +292,7 @@ def push_state():
         state = current_state()
         print(f"[agent] pushing initial state to server: {state}")
         resp = requests.post(
-            f"{SERVER_BASE}/api/desktop/update-state",
+            f"{SERVER_BASE}/api/ups/{UPS_DEVICE_ID}/desktop/update-state",
             headers=HEADERS,
             json=state,
             timeout=REQUEST_TIMEOUT_NORMAL,

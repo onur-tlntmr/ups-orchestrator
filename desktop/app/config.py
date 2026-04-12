@@ -11,6 +11,7 @@ if env_file.exists():
             os.environ.setdefault(k.strip(), v.strip().strip("'\""))
 
 SERVER_BASE = os.environ.get("UPS_SERVER_BASE", "http://192.168.50.10:8787")
+UPS_DEVICE_ID = os.environ.get("UPS_DEVICE_ID", "server-ups")
 
 SHARED_TOKEN = os.environ.get("UPS_SHARED_TOKEN", "change-me")
 

@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 try:
     from config import (
         SERVER_BASE,
+        UPS_DEVICE_ID,
         SHARED_TOKEN,
         REQUEST_TIMEOUT_FAST,
         REQUEST_TIMEOUT_NORMAL,
@@ -24,6 +25,7 @@ try:
     )
 except ImportError:
     SERVER_BASE = os.environ.get("UPS_SERVER_BASE", "http://192.168.50.10:8787")
+    UPS_DEVICE_ID = os.environ.get("UPS_DEVICE_ID", "server-ups")
     SHARED_TOKEN = os.environ.get("UPS_SHARED_TOKEN", "change-me-secret-token")
     REQUEST_TIMEOUT_FAST = int(os.environ.get("UPS_REQUEST_TIMEOUT_FAST", 2))
     REQUEST_TIMEOUT_NORMAL = int(os.environ.get("UPS_REQUEST_TIMEOUT_NORMAL", 5))
@@ -54,7 +56,7 @@ class PowerAgent:
 
     def _send_state(self, state: str, timeout_sec: int = 5, retries: int = 3) -> bool:
         """Sends machine state to the orchestrator server in-process."""
-        url = f"{SERVER_BASE}/api/desktop/update-state"
+        url = f"{SERVER_BASE}/api/ups/{UPS_DEVICE_ID}/desktop/update-state"
         headers = {"X-UPS-Token": SHARED_TOKEN}
         payload = {
             "hostname": self.hostname,
