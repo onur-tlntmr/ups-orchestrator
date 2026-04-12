@@ -83,7 +83,7 @@ def list_ups():
     return jsonify({
         "ok": True,
         "devices": [
-            {"id": d.id, "nut_name": d.nut_name, "local": d.local}
+            {"id": d.id, "nut_name": d.nut_name}
             for d in UPS_DEVICES
         ],
     })

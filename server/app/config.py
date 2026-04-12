@@ -22,14 +22,6 @@ ETHER_WAKE_BIN = os.environ.get("UPS_ETHER_WAKE_BIN", "")
 
 
 @dataclass
-class SSHConfig:
-    host: str
-    user: str
-    port: int = 22
-    key_file: Optional[str] = None
-
-
-@dataclass
 class TimingConfig:
     # Desktop offline (or unreachable / no desktop) → wait then self-shutdown
     desktop_offline_wait: int = 300          # 5 minutes
@@ -53,10 +45,8 @@ class DesktopConfig:
 class UPSDeviceConfig:
     id: str
     nut_name: str
-    local: bool
     timing: TimingConfig = field(default_factory=TimingConfig)
     desktop: Optional[DesktopConfig] = None
-    ssh: Optional[SSHConfig] = None
 
 
 def _parse_timing(d: dict) -> TimingConfig:
@@ -84,7 +74,6 @@ def _load_ups_devices() -> list[UPSDeviceConfig]:
         return [UPSDeviceConfig(
             id="main-ups",
             nut_name=os.environ.get("UPS_NUT_NAME", "ups@localhost"),
-            local=True,
             desktop=DesktopConfig(
                 agent_url=os.environ.get("DESKTOP_AGENT_URL", "http://192.168.1.2:8788"),
             ),
@@ -95,15 +84,6 @@ def _load_ups_devices() -> list[UPSDeviceConfig]:
 
     devices = []
     for d in data.get("ups_devices", []):
-        ssh = None
-        if d.get("ssh"):
-            ssh = SSHConfig(
-                host=d["ssh"]["host"],
-                user=d["ssh"]["user"],
-                port=d["ssh"].get("port", 22),
-                key_file=d["ssh"].get("key_file"),
-            )
-
         desktop = None
         if d.get("desktop"):
             desktop = DesktopConfig(
@@ -116,10 +96,8 @@ def _load_ups_devices() -> list[UPSDeviceConfig]:
         devices.append(UPSDeviceConfig(
             id=d["id"],
             nut_name=d["nut_name"],
-            local=d.get("local", False),
             timing=timing,
             desktop=desktop,
-            ssh=ssh,
         ))
     return devices
 

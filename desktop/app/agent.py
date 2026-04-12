@@ -159,9 +159,14 @@ def do_shutdown(command_id: str, fail_safe: bool = False) -> None:
                 "[agent] preflight ERROR during shutdown, but proceeding with shutdown anyway (fail-safe)"
             )
 
-    # Actual shutdown command:
-    # We prefer systemctl poweroff as it works without sudo for logged in users
-    code, out = run_cmd(["systemctl", "poweroff"])
+    # Prefer `upsmon -c fsd` so NUT powers off the attached UPS after shutdown
+    # (requires POWERDOWNFLAG + ups.target wired up on this host).
+    code, out = run_cmd(["sudo", "-n", "upsmon", "-c", "fsd"])
+    if code != 0:
+        print(
+            f"[agent] upsmon -c fsd failed (code={code}). Falling back to systemctl poweroff..."
+        )
+        code, out = run_cmd(["systemctl", "poweroff"])
     if code != 0:
         print(
             f"[agent] systemctl poweroff failed (code={code}). Falling back to sudo /sbin/shutdown..."

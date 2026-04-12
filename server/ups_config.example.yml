@@ -1,27 +1,22 @@
 # UPS Orchestrator - Device Configuration
 #
 # Copy this file to ups_config.yml and adjust for your setup.
-# Each entry in ups_devices defines one UPS and (optionally) the desktop it protects.
+# Each entry defines a UPS physically attached to THIS server and (optionally)
+# the desktop machine it should coordinate with over HTTP.
+#
+# Note: the orchestrator only manages UPS devices attached locally. For a
+# desktop with its own UPS, run NUT directly on the desktop (see README —
+# NUT master/slave setup). The desktop will shut down autonomously via its
+# own upsmon, and will also shut down as a slave of this server's UPS.
 
 ups_devices:
 
-  # --- Server's own UPS (no desktop attached) ---
   - id: "server-ups"
     nut_name: "server-ups@localhost"
-    local: true
-    # No `desktop:` block → on ONBATT, server uses desktop_offline_wait then self-shuts down
 
     timing:
-      desktop_offline_wait: 300       # 5 min on battery → self-shutdown
-
-  # --- Desktop's UPS (USB on this server, but protected machine is the desktop) ---
-  - id: "desktop-ups"
-    nut_name: "desktop-ups@localhost"
-    local: true
-
-    timing:
-      desktop_offline_wait: 300       # Desktop already off → wait 5 min then power off UPS
-      desktop_online_prompt_wait: 180 # Desktop online → notify user, give 180 s
+      desktop_offline_wait: 300       # Desktop off / no desktop → wait 5 min then fsd
+      desktop_online_prompt_wait: 180 # Desktop online → prompt user, give 180 s
       desktop_suspend_wait: 600       # Desktop suspended → wait 10 min before waking
       desktop_shutdown_wait: 60       # After issuing shutdown, wait 60 s for confirmation
       wake_online_timeout: 60         # After WoL, wait up to 60 s for desktop to come online
@@ -29,18 +24,3 @@ ups_devices:
     desktop:
       agent_url: "http://192.168.50.2:8788"
       mac_address: "AA:BB:CC:DD:EE:FF"  # Required for the suspend → wake flow
-
-  # --- Remote UPS example (managed via SSH) ---
-  # - id: "office-ups"
-  #   nut_name: "ups@localhost"   # NUT name on the *remote* host
-  #   local: false
-  #
-  #   ssh:
-  #     host: "192.168.50.5"
-  #     user: "sysadmin"
-  #     port: 22
-  #     # key_file: "/home/user/.ssh/id_rsa"
-  #
-  #   desktop:
-  #     agent_url: "http://192.168.50.6:8788"
-  #     mac_address: "AA:BB:CC:DD:EE:FF"

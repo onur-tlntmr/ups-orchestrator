@@ -87,15 +87,14 @@ Defines your UPS driver and port. Most modern USB UPS units use `usbhid-ups`.
     vendorid = 0001
     productid = 0000
     langid_fix = 0x409
-    desc = "Makelsan Lion 2200VA"
+    desc = "Server UPS"
 
 ```
 
 #### `upsd.conf`
-Configures the `upsd` daemon to listen for local and remote connections.
+Configures the `upsd` daemon to listen for local connections.
 ```ini
 LISTEN 127.0.0.1 3493
-LISTEN 0.0.0.0 3493
 ```
 
 #### `upsd.users`
@@ -116,6 +115,9 @@ NOTIFYCMD /sbin/upssched
 NOTIFYFLAG ONBATT EXEC+SYSLOG
 NOTIFYFLAG ONLINE EXEC+SYSLOG
 NOTIFYFLAG LOWBATT EXEC+SYSLOG
+
+# Ensure the UPS powers off after the server shuts down.
+POWERDOWNFLAG /etc/killpower
 ```
 
 #### `upssched.conf`
@@ -135,6 +137,60 @@ sudo systemctl restart nut-server nut-client
 Confirm synchronization:
 ```bash
 upsc myups@localhost
+```
+
+---
+
+## Desktop NUT Setup
+
+The desktop has its own UPS physically attached and runs NUT independently.
+There is **no slave link** between server and desktop — each host is master of
+its own UPS only. Cross-machine coordination (user prompt, force shutdown,
+WoL) is handled entirely by the orchestrator over HTTP.
+
+### 1. Install NUT on the desktop
+```bash
+sudo dnf install nut        # Fedora/RHEL
+sudo apt install nut        # Debian/Ubuntu
+```
+
+### 2. Desktop `ups.conf`
+```ini
+[desktop-ups]
+    driver = usbhid-ups
+    port = auto
+    desc = "Desktop UPS"
+```
+
+### 3. Desktop `upsd.conf` / `upsd.users`
+```ini
+LISTEN 127.0.0.1 3493
+```
+```ini
+[upsmon]
+    password = mypass
+    upsmon master
+```
+
+### 4. Desktop `upsmon.conf`
+The desktop monitors only its own UPS as master. When it reaches critical
+state, `upsmon -c fsd` shuts down the machine and — via `POWERDOWNFLAG` — the
+UPS powers off afterwards.
+```ini
+MONITOR desktop-ups@localhost 1 upsmon mypass master
+
+POWERDOWNFLAG /etc/killpower
+```
+
+### 5. Allow the desktop agent to run `upsmon -c fsd`
+The orchestrator pushes a `critical_shutdown` command over HTTP; the desktop
+agent executes `sudo upsmon -c fsd` locally. Add a sudoers entry:
+```bash
+sudo visudo -f /etc/sudoers.d/ups-orchestrator-agent
+```
+```
+# Adjust the user to match the desktop agent's account
+your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon
 ```
 
 ---

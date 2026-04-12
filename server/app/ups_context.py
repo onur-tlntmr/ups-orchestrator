@@ -96,32 +96,19 @@ class UPSContext:
         write_json(self._orchestrator_state_file, state)
 
     # -------------------------------------------------------------------------
-    # UPS status via upsc (local or remote via SSH)
+    # UPS status via upsc (always local)
     # -------------------------------------------------------------------------
 
     def _run_upsc(self, var: str) -> Optional[str]:
         try:
-            if self.device.local:
-                result = subprocess.run(
-                    ["upsc", self.device.nut_name, var],
-                    capture_output=True, text=True, timeout=5,
-                )
-            else:
-                ssh = self.device.ssh
-                cmd = ["ssh",
-                       "-o", "StrictHostKeyChecking=no",
-                       "-o", "ConnectTimeout=5",
-                       "-p", str(ssh.port),
-                       f"{ssh.user}@{ssh.host}"]
-                if ssh.key_file:
-                    cmd += ["-i", ssh.key_file]
-                cmd += ["upsc", self.device.nut_name, var]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-
+            result = subprocess.run(
+                ["upsc", self.device.nut_name, var],
+                capture_output=True, text=True, timeout=5,
+            )
             if result.returncode == 0:
                 return result.stdout.strip()
         except FileNotFoundError:
-            logger.debug(f"[{self.device.id}] upsc/ssh binary not found")
+            logger.debug(f"[{self.device.id}] upsc binary not found")
         except Exception as exc:
             logger.debug(f"[{self.device.id}] upsc query for {var!r} failed: {exc}")
         return None
@@ -185,24 +172,9 @@ class UPSContext:
     # -------------------------------------------------------------------------
 
     def _self_shutdown(self):
-        """Trigger forced UPS shutdown for this device's host (server or remote)."""
+        """Trigger forced UPS shutdown on the server host via local upsmon."""
         logger.error(f"[{self.device.id}] CRITICAL: triggering upsmon -c fsd")
-        if self.device.local:
-            subprocess.run(["sudo", "-n", "upsmon", "-c", "fsd"], check=False)
-        else:
-            ssh = self.device.ssh
-            cmd = ["ssh",
-                   "-o", "StrictHostKeyChecking=no",
-                   "-o", "ConnectTimeout=5",
-                   "-p", str(ssh.port),
-                   f"{ssh.user}@{ssh.host}"]
-            if ssh.key_file:
-                cmd += ["-i", ssh.key_file]
-            cmd += ["sudo", "-n", "upsmon", "-c", "fsd"]
-            try:
-                subprocess.run(cmd, timeout=15, check=False)
-            except Exception as exc:
-                logger.error(f"[{self.device.id}] SSH shutdown failed: {exc}")
+        subprocess.run(["sudo", "-n", "upsmon", "-c", "fsd"], check=False)
 
     def _wait_for_desktop_then_self_shutdown(self):
         wait = self.device.timing.desktop_shutdown_wait
