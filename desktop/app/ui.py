@@ -49,8 +49,6 @@ def prompt_soft_suspend() -> str:
                 "Shutdown",
                 "FALSE",
                 "Sleep",
-                "FALSE",
-                "Cancel",
                 "--timeout",
                 str(timeout),
             ]
@@ -64,6 +62,10 @@ def prompt_soft_suspend() -> str:
                 choice = "sleep"
             logger.info(f"User selected via zenity: {choice}")
             return choice
+
+        if code == 1:  # Cancel button clicked or window closed
+            logger.info("User dismissed the zenity dialog (Cancel/close). Returning 'cancel'.")
+            return "cancel"
 
         if code == 5:  # Zenity timeout
             logger.warning(
