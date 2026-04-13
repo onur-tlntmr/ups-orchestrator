@@ -19,6 +19,8 @@ from config import (
     SUSPEND_MAX_RETRIES,
     SUSPEND_RETRY_DELAY,
     FORCE_SUSPEND,
+    UPSMON_BIN,
+    SHUTDOWN_BIN,
 )
 from ui import prompt_soft_suspend, show_critical_warning
 
@@ -103,7 +105,7 @@ def _execute_shutdown() -> tuple[int, str]:
     # NUT 2.8+ requires -P <pid> for upsmon -c fsd
     _, pid_out = run_cmd(["pidof", "upsmon"])
     pid = pid_out.strip().split()[0] if pid_out.strip() else ""
-    upsmon_cmd = ["sudo", "-n", "/usr/bin/upsmon", "-c", "fsd"]
+    upsmon_cmd = ["sudo", "-n", UPSMON_BIN, "-c", "fsd"]
     if pid:
         upsmon_cmd += ["-P", pid]
     code, out = run_cmd(upsmon_cmd)
@@ -120,7 +122,7 @@ def _execute_shutdown() -> tuple[int, str]:
 
     logger.warning(f"systemctl poweroff failed (code={code}, out={out!r}). Falling back to sudo /sbin/shutdown...")
 
-    code, out = run_cmd(["sudo", "-n", "/sbin/shutdown", "-h", "now"])
+    code, out = run_cmd(["sudo", "-n", SHUTDOWN_BIN, "-h", "now"])
     if code == 0:
         logger.info("Shutdown initiated via sudo /sbin/shutdown -h now")
     else:

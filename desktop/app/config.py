@@ -26,3 +26,6 @@ SUSPEND_RETRY_DELAY = int(os.environ.get("UPS_SUSPEND_RETRY_DELAY", 5))
 
 FORCE_SUSPEND = os.environ.get("UPS_FORCE_SUSPEND", "false").lower() == "true"
 
+UPSMON_BIN = os.environ.get("UPS_UPSMON_BIN", "upsmon")
+SHUTDOWN_BIN = os.environ.get("UPS_SHUTDOWN_BIN", "/sbin/shutdown")
+

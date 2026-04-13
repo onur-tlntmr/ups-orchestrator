@@ -190,8 +190,14 @@ sudo visudo -f /etc/sudoers.d/ups-orchestrator-agent
 ```
 ```
 # Adjust the user to match the desktop agent's account
-your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon
+# Two rules needed: without -P (no pid) and with -P <pid> (NUT 2.8+)
+your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd
+your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd -P *
 ```
+
+> **Note:** The path to `upsmon` may vary by distro. Use `which upsmon` to confirm.
+> Common locations: `/usr/sbin/upsmon`, `/sbin/upsmon`, `/usr/bin/upsmon`.
+> Set `UPS_UPSMON_BIN` in `.env` to match, and update the sudoers path accordingly.
 
 ---
 
@@ -283,7 +289,18 @@ You can run both the server and the agent as systemd services to ensure they sta
 ### 1. Server Service
 1. Copy the service file from `server/systemd/ups-orchestrator-server.service` to `/etc/systemd/system/`.
 2. Edit the file to set your `User` and verify paths.
-3. Run:
+3. Allow the service user to run `upsmon -c fsd` without a password:
+   ```bash
+   sudo visudo -f /etc/sudoers.d/ups-orchestrator-server
+   ```
+   ```
+   # Adjust the user to match User= in the service file
+   # Two rules needed: without -P (no pid) and with -P <pid> (NUT 2.8+)
+   your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd
+   your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd -P *
+   ```
+   > Use `which upsmon` to confirm the path and set `UPS_UPSMON_BIN` in `.env` accordingly.
+4. Run:
    ```bash
    sudo systemctl daemon-reload
    sudo systemctl enable --now ups-orchestrator-server

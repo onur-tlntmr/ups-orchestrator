@@ -15,7 +15,10 @@ from config import (
     SHARED_TOKEN,
     REQUEST_TIMEOUT_SHORT,
     REQUEST_TIMEOUT_LONG,
+    UPSMON_BIN,
+    SHUTDOWN_FALLBACK_CMD,
 )
+from outage_log import OutageLog
 from state_store import read_json, write_json, now_ts
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,7 @@ class UPSContext:
 
         self._action_lock = threading.Lock()
         self._deadline_timer: Optional[threading.Timer] = None
+        self._outage_log = OutageLog(self.state_dir)
 
     # -------------------------------------------------------------------------
     # State helpers
@@ -156,12 +160,18 @@ class UPSContext:
         logger.error(f"[{self.device.id}] CRITICAL: triggering upsmon -c fsd")
         # Run as root directly (no sudo needed); fall back to sudo if non-root
         if os.geteuid() == 0:
-            cmd = ["upsmon", "-c", "fsd"]
+            cmd = [UPSMON_BIN, "-c", "fsd"]
         else:
-            cmd = ["sudo", "-n", "upsmon", "-c", "fsd"]
+            cmd = ["sudo", "-n", UPSMON_BIN, "-c", "fsd"]
         result = subprocess.run(cmd, check=False, capture_output=True, text=True)
         if result.returncode != 0:
             logger.error(f"[{self.device.id}] upsmon -c fsd failed (rc={result.returncode}): {result.stderr.strip()}")
+            if SHUTDOWN_FALLBACK_CMD:
+                logger.error(f"[{self.device.id}] Falling back to UPS_SHUTDOWN_FALLBACK_CMD: {SHUTDOWN_FALLBACK_CMD!r}")
+                fallback = SHUTDOWN_FALLBACK_CMD.split()
+                result = subprocess.run(fallback, check=False, capture_output=True, text=True)
+                if result.returncode != 0:
+                    logger.error(f"[{self.device.id}] Fallback shutdown also failed (rc={result.returncode}): {result.stderr.strip()}")
 
     def _wait_for_desktop_then_self_shutdown(self):
         wait = self.device.timing.desktop_shutdown_wait
@@ -311,9 +321,11 @@ class UPSContext:
                 logger.info(f"[{self.device.id}] Desktop unreachable at ONBATT — assuming suspended")
 
         orch = self.get_orchestrator_state()
+        onbatt_ts = now_ts()
         orch["mode"] = MODE_MONITORING
         orch["last_event"] = "ONBATT"
-        orch["onbatt_since"] = now_ts()
+        orch["onbatt_since"] = onbatt_ts
+        self._outage_log.record_start(onbatt_ts)
 
         if not self.device.desktop or desktop_status not in ("online", "suspended"):
             # No desktop, offline, unknown, or unreachable → just wait
@@ -367,6 +379,7 @@ class UPSContext:
 
             orch["mode"] = MODE_SHUTTING_DOWN
             self.save_orchestrator_state(orch)
+            self._outage_log.record_end("shutdown_initiated")
 
         if phase == PHASE_USER_PROMPT:
             threading.Thread(target=self._action_force_shutdown_desktop, daemon=True).start()
@@ -439,6 +452,7 @@ class UPSContext:
 
     def _reset_to_idle(self, reason: str):
         logger.info(f"[{self.device.id}] Resetting to idle — reason: {reason}")
+        self._outage_log.record_end("power_restored")
         if self._deadline_timer is not None:
             self._deadline_timer.cancel()
             self._deadline_timer = None
