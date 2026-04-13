@@ -271,7 +271,9 @@ class LocalHandler(BaseHTTPRequestHandler):
                     time.sleep(delay)
                 logger.info("Showing critical shutdown warning")
                 threading.Thread(target=show_critical_warning, daemon=True).start()
-                do_shutdown(cmd_id, fail_safe=True)
+                # fail_safe=False: check preflight so a power-restored cancellation
+                # on the server side is respected before executing the shutdown.
+                do_shutdown(cmd_id, fail_safe=False)
 
             threading.Thread(target=handle, daemon=True).start()
             self._json(202, {"ok": True, "message": "command accepted for background processing"})
