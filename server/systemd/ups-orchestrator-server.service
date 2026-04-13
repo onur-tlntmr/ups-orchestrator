@@ -8,6 +8,8 @@ WorkingDirectory=/opt/ups-orchestrator/server
 EnvironmentFile=/opt/ups-orchestrator/server/.env
 ExecStart=/opt/ups-orchestrator/server/.venv/bin/python app/server.py
 Restart=always
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target

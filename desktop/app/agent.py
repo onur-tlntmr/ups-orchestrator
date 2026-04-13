@@ -22,7 +22,6 @@ from config import (
 )
 from ui import prompt_soft_suspend, show_critical_warning
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="[agent] %(levelname)s: %(message)s",
@@ -95,20 +94,53 @@ def ack(command_id: str, status: str, result: dict) -> None:
         logger.error(f"Ack call failed: {e}")
 
 
+def _execute_shutdown() -> tuple[int, str]:
+    """Try shutdown methods in order: upsmon fsd → systemctl poweroff → sudo shutdown.
+
+    Returns (returncode, output) of the first method that succeeds,
+    or the last failure if all methods fail.
+    """
+    # NUT 2.8+ requires -P <pid> for upsmon -c fsd
+    _, pid_out = run_cmd(["pidof", "upsmon"])
+    pid = pid_out.strip().split()[0] if pid_out.strip() else ""
+    upsmon_cmd = ["sudo", "-n", "/usr/bin/upsmon", "-c", "fsd"]
+    if pid:
+        upsmon_cmd += ["-P", pid]
+    code, out = run_cmd(upsmon_cmd)
+    if code == 0:
+        logger.info(f"Shutdown initiated via upsmon -c fsd (pid={pid or 'unknown'})")
+        return code, out
+
+    logger.warning(f"upsmon -c fsd failed (code={code}, out={out!r}). Falling back to systemctl poweroff...")
+
+    code, out = run_cmd(["systemctl", "poweroff"])
+    if code == 0:
+        logger.info("Shutdown initiated via systemctl poweroff")
+        return code, out
+
+    logger.warning(f"systemctl poweroff failed (code={code}, out={out!r}). Falling back to sudo /sbin/shutdown...")
+
+    code, out = run_cmd(["sudo", "-n", "/sbin/shutdown", "-h", "now"])
+    if code == 0:
+        logger.info("Shutdown initiated via sudo /sbin/shutdown -h now")
+    else:
+        logger.error(f"sudo /sbin/shutdown also failed (code={code}, out={out!r})")
+
+    return code, out
+
+
 def do_suspend(command_id: str) -> None:
-    print(f"[agent] do_suspend called for {command_id}")
+    logger.info(f"do_suspend called for {command_id}")
 
     status = preflight(command_id, "ups_state")
 
     if status == PreflightStatus.REJECTED:
-        print("[agent] preflight rejected for ups_state")
+        logger.warning("Preflight rejected for ups_state")
         ack(command_id, "failed", {"reason": "preflight_rejected"})
         return
 
     if status == PreflightStatus.ERROR:
-        print(
-            "[agent] preflight ERROR (connection refused). FALLING BACK TO SHUTDOWN for safety!"
-        )
+        logger.error("Preflight ERROR (connection refused). Falling back to shutdown for safety!")
         do_shutdown(command_id, fail_safe=True)
         return
 
@@ -116,32 +148,27 @@ def do_suspend(command_id: str) -> None:
 
     for attempt in range(1, SUSPEND_MAX_RETRIES + 1):
         logger.info(f"Suspend attempt {attempt}/{SUSPEND_MAX_RETRIES}")
-        
-        # force suspend (-i) on the last attempt if FORCE_SUSPEND is true
+
         suspend_cmd = ["systemctl", "suspend"]
         if attempt == SUSPEND_MAX_RETRIES and FORCE_SUSPEND:
-            logger.info("This is the final attempt and FORCE_SUSPEND is enabled. Adding -i block.")
+            logger.info("Final attempt with FORCE_SUSPEND enabled. Adding -i flag.")
             suspend_cmd.append("-i")
-            
+
         code, out = run_cmd(suspend_cmd)
 
-        # Fallback to sudo if regular suspend requires permissions
-        if code != 0 and (
-            "Access denied" in out or "Interactive authentication required" in out
-        ):
+        if code != 0 and ("Access denied" in out or "Interactive authentication required" in out):
             logger.warning(f"{' '.join(suspend_cmd)} returned {code}. Trying with sudo...")
-            sudo_cmd = ["sudo", "-n"] + suspend_cmd
-            code, out = run_cmd(sudo_cmd)
+            code, out = run_cmd(["sudo", "-n"] + suspend_cmd)
 
         if code == 0:
             logger.info("Suspend command executed successfully")
             ack(command_id, "done", {"action": "suspended"})
             return
 
-        logger.error(f"Failed to execute suspend command: {out}")
+        logger.error(f"Suspend failed: {out}")
 
         if attempt < SUSPEND_MAX_RETRIES:
-            logger.info(f"Waiting {SUSPEND_RETRY_DELAY} seconds before retrying...")
+            logger.info(f"Waiting {SUSPEND_RETRY_DELAY}s before retrying...")
             time.sleep(SUSPEND_RETRY_DELAY)
 
     logger.error("All suspend attempts failed. Falling back to shutdown!")
@@ -152,35 +179,19 @@ def do_shutdown(command_id: str, fail_safe: bool = False) -> None:
     if not fail_safe:
         status = preflight(command_id, "critical_shutdown")
         if status == PreflightStatus.REJECTED:
-            print("[agent] preflight rejected for critical_shutdown")
+            logger.warning("Preflight rejected for critical_shutdown")
             ack(command_id, "failed", {"reason": "preflight_rejected"})
             return
         if status == PreflightStatus.ERROR:
-            print(
-                "[agent] preflight ERROR during shutdown, but proceeding with shutdown anyway (fail-safe)"
-            )
+            logger.warning("Preflight ERROR during shutdown, proceeding anyway")
 
-    # Prefer `upsmon -c fsd` so NUT powers off the attached UPS after shutdown
-    # (requires POWERDOWNFLAG + ups.target wired up on this host).
-    code, out = run_cmd(["sudo", "-n", "upsmon", "-c", "fsd"])
-    if code != 0:
-        print(
-            f"[agent] upsmon -c fsd failed (code={code}). Falling back to systemctl poweroff..."
-        )
-        code, out = run_cmd(["systemctl", "poweroff"])
-    if code != 0:
-        print(
-            f"[agent] systemctl poweroff failed (code={code}). Falling back to sudo /sbin/shutdown..."
-        )
-        code, out = run_cmd(["sudo", "-n", "/sbin/shutdown", "-h", "now"])
+    code, out = _execute_shutdown()
+    logger.info(f"Shutdown result: code={code}, out={out!r}")
 
-    print(f"[agent] CRITICAL: system shutdown initiated. code={code}, out={out}")
-
-    if code == 0:
-        if not fail_safe:
+    if not fail_safe:
+        if code == 0:
             ack(command_id, "done", {"action": "shutdown"})
-    else:
-        if not fail_safe:
+        else:
             ack(command_id, "failed", {"action": "shutdown", "output": out})
 
 
@@ -191,33 +202,30 @@ class LocalHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass
 
     def do_GET(self):
-        token = self.headers.get("X-UPS-Token", "")
-        if token != SHARED_TOKEN:
+        if self.headers.get("X-UPS-Token", "") != SHARED_TOKEN:
             self._json(403, {"ok": False})
             return
-
         if self.path == "/state":
             self._json(200, current_state())
             return
-
         self._json(404, {"ok": False})
 
     def do_POST(self):
-        token = self.headers.get("X-UPS-Token", "")
-        if token != SHARED_TOKEN:
+        if self.headers.get("X-UPS-Token", "") != SHARED_TOKEN:
             self._json(403, {"ok": False})
             return
-
         if self.path != "/command":
             self._json(404, {"ok": False})
             return
 
         length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length)
-        payload = json.loads(raw.decode("utf-8"))
+        payload = json.loads(self.rfile.read(length).decode("utf-8"))
 
         cmd = payload.get("command")
         cmd_id = payload.get("id")
@@ -225,21 +233,17 @@ class LocalHandler(BaseHTTPRequestHandler):
 
         logger.info(f"Pushed command received: cmd={cmd!r} id={cmd_id!r} delay={delay}")
 
-        if delay > 0:
-            print(f"[agent] sleeping for delayed command: {delay} seconds")
-            time.sleep(delay)
-
         if cmd == "ups_state":
             event = payload.get("payload", {}).get("event")
-
             if event == "ONBATT":
-
                 def handle():
+                    if delay > 0:
+                        logger.info(f"Sleeping {delay}s before handling command")
+                        time.sleep(delay)
                     try:
-                        print(f"[agent] starting prompt thread for command {cmd_id}")
+                        logger.info(f"Starting prompt for command {cmd_id}")
                         choice = prompt_soft_suspend()
-                        print(f"[agent] prompt returned choice={choice!r}")
-
+                        logger.info(f"Prompt returned choice={choice!r}")
                         if choice == "sleep":
                             do_suspend(cmd_id)
                         elif choice == "shutdown":
@@ -247,32 +251,27 @@ class LocalHandler(BaseHTTPRequestHandler):
                             do_shutdown(cmd_id, fail_safe=True)
                             ack(cmd_id, "done", {"action": "shutdown_by_event"})
                         else:
-                            logger.info(f"Command {cmd_id} cancelled by user/logic")
+                            logger.info(f"Command {cmd_id} cancelled")
                             ack(cmd_id, "cancelled", {"reason": "user_cancelled"})
                     except Exception as e:
                         logger.error(f"Error in command handling thread: {e}")
-                        # If prompt failed, try to shutdown for safety during ONBATT
                         do_shutdown(cmd_id, fail_safe=True)
 
                 threading.Thread(target=handle, daemon=True).start()
-                self._json(
-                    202,
-                    {"ok": True, "message": "state accepted for background processing"},
-                )
+                self._json(202, {"ok": True, "message": "state accepted for background processing"})
                 return
 
         if cmd == "critical_shutdown":
-
             def handle():
-                print("[agent] showing critical shutdown warning")
-                show_critical_warning()
-                do_shutdown(cmd_id)
+                if delay > 0:
+                    logger.info(f"Sleeping {delay}s before shutdown")
+                    time.sleep(delay)
+                logger.info("Showing critical shutdown warning")
+                threading.Thread(target=show_critical_warning, daemon=True).start()
+                do_shutdown(cmd_id, fail_safe=True)
 
             threading.Thread(target=handle, daemon=True).start()
-            self._json(
-                202,
-                {"ok": True, "message": "command accepted for background processing"},
-            )
+            self._json(202, {"ok": True, "message": "command accepted for background processing"})
             return
 
         self._json(400, {"ok": False, "reason": "unknown_command"})
@@ -282,7 +281,7 @@ class LocalHandler(BaseHTTPRequestHandler):
 
 
 def local_server():
-    print(f"[agent] local state server listening on 0.0.0.0:{AGENT_PORT}")
+    logger.info(f"Local state server listening on 0.0.0.0:{AGENT_PORT}")
     server = ThreadingHTTPServer(("0.0.0.0", AGENT_PORT), LocalHandler)
     server.serve_forever()
 
@@ -290,16 +289,16 @@ def local_server():
 def push_state():
     try:
         state = current_state()
-        print(f"[agent] pushing initial state to server: {state}")
+        logger.info(f"Pushing initial state to server: {state}")
         resp = requests.post(
             f"{SERVER_BASE}/api/ups/{UPS_DEVICE_ID}/desktop/update-state",
             headers=HEADERS,
             json=state,
             timeout=REQUEST_TIMEOUT_NORMAL,
         )
-        print(f"[agent] push_state status: {resp.status_code}")
+        logger.info(f"Push state status: {resp.status_code}")
     except Exception as e:
-        print(f"[agent] push_state failed: {e}")
+        logger.error(f"Push state failed: {e}")
 
 
 if __name__ == "__main__":

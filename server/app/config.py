@@ -16,10 +16,6 @@ UNKNOWN_POLL_INTERVAL = int(os.environ.get("UPS_POLL_INTERVAL", 30))
 REQUEST_TIMEOUT_SHORT = int(os.environ.get("UPS_REQUEST_TIMEOUT_SHORT", 5))
 REQUEST_TIMEOUT_LONG = int(os.environ.get("UPS_REQUEST_TIMEOUT_LONG", 30))
 
-# Path to ether-wake / etherwake binary (used for Wake-on-LAN).
-# If empty, the orchestrator falls back to searching PATH.
-ETHER_WAKE_BIN = os.environ.get("UPS_ETHER_WAKE_BIN", "")
-
 
 @dataclass
 class TimingConfig:
@@ -36,6 +32,12 @@ class TimingConfig:
 
 
 @dataclass
+class WolRelayConfig:
+    host: str                            # e.g. "root@192.168.50.1"
+    identity_file: Optional[str] = None  # e.g. "/root/.ssh/wol_key"
+
+
+@dataclass
 class DesktopConfig:
     agent_url: str
     mac_address: Optional[str] = None  # required for desktop_suspend_wait → wake flow
@@ -47,6 +49,7 @@ class UPSDeviceConfig:
     nut_name: str
     timing: TimingConfig = field(default_factory=TimingConfig)
     desktop: Optional[DesktopConfig] = None
+    wol_relay: Optional[WolRelayConfig] = None
 
 
 def _parse_timing(d: dict) -> TimingConfig:
@@ -91,6 +94,13 @@ def _load_ups_devices() -> list[UPSDeviceConfig]:
                 mac_address=d["desktop"].get("mac_address"),
             )
 
+        wol_relay = None
+        if d.get("wol_relay"):
+            wol_relay = WolRelayConfig(
+                host=d["wol_relay"]["host"],
+                identity_file=d["wol_relay"].get("identity_file"),
+            )
+
         timing = _parse_timing(d.get("timing"))
 
         devices.append(UPSDeviceConfig(
@@ -98,7 +108,9 @@ def _load_ups_devices() -> list[UPSDeviceConfig]:
             nut_name=d["nut_name"],
             timing=timing,
             desktop=desktop,
+            wol_relay=wol_relay,
         ))
+
     return devices
 
 

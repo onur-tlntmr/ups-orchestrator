@@ -21,6 +21,12 @@ ups_devices:
       desktop_shutdown_wait: 60       # After issuing shutdown, wait 60 s for confirmation
       wake_online_timeout: 60         # After WoL, wait up to 60 s for desktop to come online
 
+    # Optional: send WoL via SSH on a relay host (e.g. Proxmox host) instead of locally.
+    # Useful when the server runs inside a VM and the bridge blocks broadcast frames.
+    # wol_relay:
+    #   host: "root@192.168.50.1"
+    #   identity_file: "/root/.ssh/wol_key"  # omit to use the default SSH key
+
     desktop:
       agent_url: "http://192.168.50.2:8788"
       mac_address: "AA:BB:CC:DD:EE:FF"  # Required for the suspend → wake flow

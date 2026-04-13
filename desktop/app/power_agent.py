@@ -53,11 +53,11 @@ class PowerAgent:
         self.loop = GLib.MainLoop()
         self.inhibit_fd = None
         self.hostname = socket.gethostname()
+        self._state_url = f"{SERVER_BASE}/api/ups/{UPS_DEVICE_ID}/desktop/update-state"
+        self._headers = {"X-UPS-Token": SHARED_TOKEN}
 
     def _send_state(self, state: str, timeout_sec: int = 5, retries: int = 3) -> bool:
-        """Sends machine state to the orchestrator server in-process."""
-        url = f"{SERVER_BASE}/api/ups/{UPS_DEVICE_ID}/desktop/update-state"
-        headers = {"X-UPS-Token": SHARED_TOKEN}
+        """Sends machine state to the orchestrator server."""
         payload = {
             "hostname": self.hostname,
             "status": state,
@@ -67,16 +67,16 @@ class PowerAgent:
 
         for attempt in range(retries):
             try:
-                logger.info(f"Sending state '{state}' to {url} (attempt {attempt + 1})")
+                logger.info(f"Sending state '{state}' for {self.hostname} to {self._state_url}")
                 resp = requests.post(
-                    url, headers=headers, json=payload, timeout=timeout_sec
+                    self._state_url, headers=self._headers, json=payload, timeout=timeout_sec
                 )
                 resp.raise_for_status()
-                logger.info(f"State '{state}' sent successfully")
+                logger.info("Successfully updated state")
                 return True
             except Exception as e:
                 logger.error(
-                    f"Failed to send state '{state}' (attempt {attempt + 1}): {e}"
+                    f"Failed to update state: {e}"
                 )
                 if attempt < retries - 1:
                     time.sleep(1)
@@ -111,7 +111,7 @@ class PowerAgent:
         logger.info(f"PrepareForSleep received: {sleeping}")
 
         if sleeping:
-            self._send_state("suspending", timeout_sec=REQUEST_TIMEOUT_FAST)
+            self._send_state("suspended", timeout_sec=REQUEST_TIMEOUT_FAST)
             self.release_delay_lock()
         else:
             logger.info("System woke up, waiting for network...")

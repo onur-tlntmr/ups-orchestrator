@@ -1,5 +1,4 @@
 import logging
-import shutil
 import subprocess
 import threading
 import time
@@ -9,12 +8,12 @@ from typing import Optional
 import requests
 import requests.exceptions
 
+import wol
 from config import (
     UPSDeviceConfig,
     SHARED_TOKEN,
     REQUEST_TIMEOUT_SHORT,
     REQUEST_TIMEOUT_LONG,
-    ETHER_WAKE_BIN,
 )
 from state_store import read_json, write_json, now_ts
 
@@ -32,27 +31,6 @@ PHASE_OFFLINE_WAIT = "offline_wait"      # desktop offline / no desktop → just
 PHASE_SUSPEND_WAIT = "suspend_wait"      # desktop suspended → wait then wake
 
 
-def send_wol(mac_address: str):
-    """Send Wake-on-LAN magic packet via the system `ether-wake` binary.
-
-    Requires `ether-wake` (or `etherwake`) to be installed and runnable as root
-    (typically via passwordless sudo). See README for installation instructions.
-    """
-    binary = ETHER_WAKE_BIN or shutil.which("ether-wake") or shutil.which("etherwake")
-    if not binary:
-        raise FileNotFoundError(
-            "ether-wake / etherwake binary not found "
-            "(set UPS_ETHER_WAKE_BIN or install net-tools / etherwake)"
-        )
-
-    cmd = ["sudo", "-n", binary, mac_address]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"{binary} exited {result.returncode}: {result.stderr.strip() or result.stdout.strip()}"
-        )
-
-
 class UPSContext:
     def __init__(self, device: UPSDeviceConfig, base_state_dir: Path):
         self.device = device
@@ -64,6 +42,7 @@ class UPSContext:
         self._orchestrator_state_file = self.state_dir / "orchestrator_state.json"
 
         self._action_lock = threading.Lock()
+        self._deadline_timer: Optional[threading.Timer] = None
 
     # -------------------------------------------------------------------------
     # State helpers
@@ -182,12 +161,18 @@ class UPSContext:
         logger.info(f"[{self.device.id}] Waiting up to {wait}s for desktop to shut down")
 
         while now_ts() < deadline:
+            if self.get_orchestrator_state().get("mode") != MODE_SHUTTING_DOWN:
+                logger.info(f"[{self.device.id}] Power restored during shutdown wait — aborting")
+                return
             state = self.get_desktop_state()
             if state.get("status") in ("shutting_down", "offline", "suspended"):
                 logger.info(f"[{self.device.id}] Desktop reported '{state.get('status')}', proceeding with self shutdown")
                 break
             time.sleep(5)
         else:
+            if self.get_orchestrator_state().get("mode") != MODE_SHUTTING_DOWN:
+                logger.info(f"[{self.device.id}] Power restored during shutdown wait — aborting")
+                return
             logger.warning(f"[{self.device.id}] Desktop shutdown wait timed out, proceeding anyway")
 
         self._self_shutdown()
@@ -304,6 +289,19 @@ class UPSContext:
         state = self.get_desktop_state()
         desktop_status = state.get("status") if self.device.desktop else None
 
+        # Always do a live fetch when there is a desktop configured.
+        # The cached state may be stale (e.g. "suspending" / "online" written just
+        # before the desktop went to sleep and the network dropped).
+        if self.device.desktop:
+            live = self.fetch_state_from_desktop()
+            if live:
+                desktop_status = live.get("status", desktop_status)
+            elif desktop_status not in ("offline", "shutting_down"):
+                # Unreachable and last known state was not an explicit offline state →
+                # desktop is likely suspended (state update didn't reach us in time).
+                desktop_status = "suspended"
+                logger.info(f"[{self.device.id}] Desktop unreachable at ONBATT — assuming suspended")
+
         orch = self.get_orchestrator_state()
         orch["mode"] = MODE_MONITORING
         orch["last_event"] = "ONBATT"
@@ -324,11 +322,24 @@ class UPSContext:
         remaining = orch["phase_deadline"] - now_ts()
         logger.info(f"[{self.device.id}] Started battery monitoring — phase={orch['phase']}, deadline in {remaining}s")
 
+        # Arm a timer so the deadline fires even if no events arrive.
+        self._arm_deadline_timer(remaining)
+
         # If we entered user_prompt, send the notification immediately
         if orch["phase"] == PHASE_USER_PROMPT:
             cmd = self._make_ups_state_command()
             self.save_command(cmd)
             self.push_command_to_desktop(cmd)
+
+    def _arm_deadline_timer(self, delay: float):
+        if self._deadline_timer is not None:
+            self._deadline_timer.cancel()
+        self._deadline_timer = threading.Timer(
+            max(delay, 0),
+            lambda: self._execute_phase_action(reason="phase_deadline"),
+        )
+        self._deadline_timer.daemon = True
+        self._deadline_timer.start()
 
     def _check_phase_deadline(self):
         orch = self.get_orchestrator_state()
@@ -340,8 +351,8 @@ class UPSContext:
     def _execute_phase_action(self, reason: str):
         with self._action_lock:
             orch = self.get_orchestrator_state()
-            if orch.get("mode") == MODE_SHUTTING_DOWN:
-                return  # already in flight
+            if orch.get("mode") != MODE_MONITORING:
+                return  # already shutting down or power restored
 
             phase = orch.get("phase") or PHASE_OFFLINE_WAIT
             logger.info(f"[{self.device.id}] Executing phase action — phase={phase}, reason={reason}")
@@ -370,8 +381,15 @@ class UPSContext:
         mac = self.device.desktop.mac_address if self.device.desktop else None
         if mac:
             try:
-                logger.info(f"[{self.device.id}] Sending WoL to {mac}")
-                send_wol(mac)
+                relay = self.device.wol_relay
+                if relay:
+                    logger.info(f"[{self.device.id}] Sending WoL to {mac} via SSH relay {relay.host!r}")
+                    wol.send(mac, relay_ssh=relay.host, relay_identity_file=relay.identity_file or "")
+                else:
+                    desktop_ip = self.device.desktop.agent_url.split("//")[-1].split(":")[0]
+                    iface = wol.iface_for_ip(desktop_ip)
+                    logger.info(f"[{self.device.id}] Sending WoL to {mac} via {iface!r}")
+                    wol.send(mac, iface=iface)
             except Exception as exc:
                 logger.error(f"[{self.device.id}] WoL failed: {exc}")
         else:
@@ -379,18 +397,32 @@ class UPSContext:
 
         # Wait for desktop to come online so it can shut down gracefully
         deadline = now_ts() + self.device.timing.wake_online_timeout
+        desktop_came_online = False
         while now_ts() < deadline:
+            if self.get_orchestrator_state().get("mode") != MODE_SHUTTING_DOWN:
+                logger.info(f"[{self.device.id}] Power restored during wake wait — aborting shutdown")
+                return
             state = self.fetch_state_from_desktop()
             if state.get("status") == "online":
                 logger.info(f"[{self.device.id}] Desktop is online after wake, pushing shutdown")
+                desktop_came_online = True
                 break
             time.sleep(5)
-        else:
+
+        if not desktop_came_online:
             logger.warning(f"[{self.device.id}] Desktop did not come online after WoL, pushing shutdown anyway")
+
+        if self.get_orchestrator_state().get("mode") != MODE_SHUTTING_DOWN:
+            logger.info(f"[{self.device.id}] Power restored before shutdown push — aborting")
+            return
 
         cmd = self._make_critical_shutdown_command()
         self.save_command(cmd)
         self.push_command_to_desktop(cmd)
+
+        # Start the shutdown-wait timer only after the command has been pushed.
+        # This ensures the desktop has the full desktop_shutdown_wait window to
+        # process the command, even if it came online late during the WoL wait.
         self._wait_for_desktop_then_self_shutdown()
 
     # -------------------------------------------------------------------------
@@ -399,6 +431,9 @@ class UPSContext:
 
     def _reset_to_idle(self, reason: str):
         logger.info(f"[{self.device.id}] Resetting to idle — reason: {reason}")
+        if self._deadline_timer is not None:
+            self._deadline_timer.cancel()
+            self._deadline_timer = None
         orch = self.get_orchestrator_state()
         orch["mode"] = MODE_IDLE
         orch["phase"] = None
