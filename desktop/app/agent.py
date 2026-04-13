@@ -248,8 +248,9 @@ class LocalHandler(BaseHTTPRequestHandler):
                             do_suspend(cmd_id)
                         elif choice == "shutdown":
                             logger.info("Executing shutdown action")
-                            do_shutdown(cmd_id, fail_safe=True)
-                            ack(cmd_id, "done", {"action": "shutdown_by_event"})
+                            # fail_safe=False: preflight checks if command still valid
+                            # (power may have been restored while dialog was open)
+                            do_shutdown(cmd_id, fail_safe=False)
                         else:
                             logger.info(f"Command {cmd_id} cancelled")
                             ack(cmd_id, "cancelled", {"reason": "user_cancelled"})
