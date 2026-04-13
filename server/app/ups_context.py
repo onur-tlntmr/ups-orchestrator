@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -153,7 +154,14 @@ class UPSContext:
     def _self_shutdown(self):
         """Trigger forced UPS shutdown on the server host via local upsmon."""
         logger.error(f"[{self.device.id}] CRITICAL: triggering upsmon -c fsd")
-        subprocess.run(["sudo", "-n", "upsmon", "-c", "fsd"], check=False)
+        # Run as root directly (no sudo needed); fall back to sudo if non-root
+        if os.geteuid() == 0:
+            cmd = ["upsmon", "-c", "fsd"]
+        else:
+            cmd = ["sudo", "-n", "upsmon", "-c", "fsd"]
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error(f"[{self.device.id}] upsmon -c fsd failed (rc={result.returncode}): {result.stderr.strip()}")
 
     def _wait_for_desktop_then_self_shutdown(self):
         wait = self.device.timing.desktop_shutdown_wait
