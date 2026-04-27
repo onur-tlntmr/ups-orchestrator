@@ -1,13 +1,19 @@
 import json
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from config import STATE_MAX_AGE
+from config import STATE_MAX_AGE, TIMEZONE
 
 
 def now_ts():
     return int(time.time())
+
+
+def to_iso(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=ZoneInfo(TIMEZONE)).isoformat(timespec="seconds")
 
 
 def read_json(path: Path, default):

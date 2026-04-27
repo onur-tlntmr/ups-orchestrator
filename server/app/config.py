@@ -6,7 +6,10 @@ from typing import Optional
 import yaml
 
 STATE_DIR = Path(os.environ.get("UPS_STATE_DIR", "./.runtime-state"))
+LOGS_DIR = Path(os.environ.get("UPS_LOGS_DIR", "./logs"))
+TIMEZONE = os.environ.get("UPS_TIMEZONE", "Europe/Istanbul")
 STATE_DIR.mkdir(parents=True, exist_ok=True)
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 SHARED_TOKEN = os.environ.get("UPS_SHARED_TOKEN", "change-me")
 SERVER_PORT = int(os.environ.get("UPS_SERVER_PORT", 8787))

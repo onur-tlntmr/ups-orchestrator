@@ -17,8 +17,16 @@ from config import (
     REQUEST_TIMEOUT_LONG,
     UPSMON_BIN,
     SHUTDOWN_FALLBACK_CMD,
+    LOGS_DIR,
 )
 from outage_log import OutageLog
+from event_log import (
+    EventLog,
+    EV_ONBATT, EV_ONLINE, EV_LOWBATT, EV_PHASE_STARTED,
+    EV_DESKTOP_NOTIFIED, EV_WOL_SENT, EV_WOL_FAILED,
+    EV_SHUTDOWN_PUSHED, EV_DESKTOP_CONFIRMED, EV_DESKTOP_TIMEOUT,
+    EV_DESKTOP_OBSERVED, EV_SELF_SHUTDOWN, EV_SERVER_RESTARTED,
+)
 from state_store import read_json, write_json, now_ts
 
 logger = logging.getLogger(__name__)
@@ -47,7 +55,10 @@ class UPSContext:
 
         self._action_lock = threading.Lock()
         self._deadline_timer: Optional[threading.Timer] = None
-        self._outage_log = OutageLog(self.state_dir)
+        logs_dir = LOGS_DIR / device.id
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        self._outage_log = OutageLog(logs_dir)
+        self._event_log = EventLog(logs_dir)
 
     # -------------------------------------------------------------------------
     # State helpers
@@ -158,6 +169,7 @@ class UPSContext:
     def _self_shutdown(self):
         """Trigger forced UPS shutdown on the server host via local upsmon."""
         logger.error(f"[{self.device.id}] CRITICAL: triggering upsmon -c fsd")
+        self._event_log.record(EV_SELF_SHUTDOWN)
         # Run as root directly (no sudo needed); fall back to sudo if non-root
         if os.geteuid() == 0:
             cmd = [UPSMON_BIN, "-c", "fsd"]
@@ -185,6 +197,7 @@ class UPSContext:
             state = self.get_desktop_state()
             if state.get("status") in ("shutting_down", "offline", "suspended"):
                 logger.info(f"[{self.device.id}] Desktop reported '{state.get('status')}', proceeding with self shutdown")
+                self._event_log.record(EV_DESKTOP_CONFIRMED, {"status": state.get("status")})
                 break
             time.sleep(5)
         else:
@@ -192,6 +205,7 @@ class UPSContext:
                 logger.info(f"[{self.device.id}] Power restored during shutdown wait — aborting")
                 return
             logger.warning(f"[{self.device.id}] Desktop shutdown wait timed out, proceeding anyway")
+            self._event_log.record(EV_DESKTOP_TIMEOUT)
 
         self._self_shutdown()
 
@@ -289,6 +303,8 @@ class UPSContext:
                     return
                 cur["mode"] = MODE_SHUTTING_DOWN
                 self.save_orchestrator_state(cur)
+            self._event_log.record(EV_DESKTOP_OBSERVED, {"status": new_status})
+            self._outage_log.record_end("shutdown_initiated")
             threading.Thread(target=self._self_shutdown, daemon=True).start()
             return
 
@@ -328,7 +344,6 @@ class UPSContext:
         self._outage_log.record_start(onbatt_ts)
 
         if not self.device.desktop or desktop_status not in ("online", "suspended"):
-            # No desktop, offline, unknown, or unreachable → just wait
             orch["phase"] = PHASE_OFFLINE_WAIT
             orch["phase_deadline"] = now_ts() + timing.desktop_offline_wait
         elif desktop_status == "suspended":
@@ -338,6 +353,7 @@ class UPSContext:
             orch["phase"] = PHASE_USER_PROMPT
             orch["phase_deadline"] = now_ts() + timing.desktop_online_prompt_wait
 
+        self._event_log.record(EV_PHASE_STARTED, {"phase": orch["phase"], "desktop_state": desktop_status})
         self.save_orchestrator_state(orch)
         remaining = orch["phase_deadline"] - now_ts()
         logger.info(f"[{self.device.id}] Started battery monitoring — phase={orch['phase']}, deadline in {remaining}s")
@@ -350,6 +366,7 @@ class UPSContext:
             cmd = self._make_ups_state_command()
             self.save_command(cmd)
             self.push_command_to_desktop(cmd)
+            self._event_log.record(EV_DESKTOP_NOTIFIED, {"command": "ups_state"})
 
     def _arm_deadline_timer(self, delay: float):
         if self._deadline_timer is not None:
@@ -396,6 +413,7 @@ class UPSContext:
         cmd = self._make_critical_shutdown_command()
         self.save_command(cmd)
         self.push_command_to_desktop(cmd)
+        self._event_log.record(EV_SHUTDOWN_PUSHED)
         self._wait_for_desktop_then_self_shutdown()
 
     def _action_wake_then_shutdown(self):
@@ -411,8 +429,10 @@ class UPSContext:
                     iface = wol.iface_for_ip(desktop_ip)
                     logger.info(f"[{self.device.id}] Sending WoL to {mac} via {iface!r}")
                     wol.send(mac, iface=iface)
+                self._event_log.record(EV_WOL_SENT, {"mac": mac})
             except Exception as exc:
                 logger.error(f"[{self.device.id}] WoL failed: {exc}")
+                self._event_log.record(EV_WOL_FAILED, {"mac": mac, "error": str(exc)})
         else:
             logger.warning(f"[{self.device.id}] No MAC configured, skipping WoL")
 
@@ -440,6 +460,7 @@ class UPSContext:
         cmd = self._make_critical_shutdown_command()
         self.save_command(cmd)
         self.push_command_to_desktop(cmd)
+        self._event_log.record(EV_SHUTDOWN_PUSHED)
 
         # Start the shutdown-wait timer only after the command has been pushed.
         # This ensures the desktop has the full desktop_shutdown_wait window to
@@ -473,6 +494,8 @@ class UPSContext:
 
     def reset_state_on_startup(self):
         logger.info(f"[{self.device.id}] Resetting orchestrator state on startup")
+        self._outage_log.resolve_on_startup()
+        self._event_log.record(EV_SERVER_RESTARTED)
         orch = self.get_orchestrator_state()
         orch["mode"] = MODE_IDLE
         orch["phase"] = None
