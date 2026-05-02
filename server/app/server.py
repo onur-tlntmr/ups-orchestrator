@@ -119,7 +119,12 @@ def ups_event(ups_id: str):
     event = payload.get("event")
 
     ctx.handle_event(event)
-    return {"ok": True}
+
+    # Tell the upssched-cmd wrapper whether it should also fire the safety-net
+    # `shutdown -h now`. Only LOWBATT on a primary UPS warrants this; observer
+    # UPSes never bring the server down, and other events don't shut down at all.
+    shutdown_server = (event == "LOWBATT") and not ctx.device.is_observer
+    return {"ok": True, "shutdown_server": shutdown_server}
 
 
 @APP.post("/api/ups/<ups_id>/desktop/update-state")

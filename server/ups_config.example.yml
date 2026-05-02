@@ -1,18 +1,30 @@
 # UPS Orchestrator - Device Configuration
 #
 # Copy this file to ups_config.yml and adjust for your setup.
-# Each entry defines a UPS physically attached to THIS server and (optionally)
-# the desktop machine it should coordinate with over HTTP.
 #
-# Note: the orchestrator only manages UPS devices attached locally. For a
-# desktop with its own UPS, run NUT directly on the desktop (see README —
-# NUT master/slave setup). The desktop will shut down autonomously via its
-# own upsmon, and will also shut down as a slave of this server's UPS.
+# Each entry defines a UPS physically attached to THIS server (USB).
+#
+# Roles:
+#   primary  — this server's own UPS. LOWBATT triggers `upsmon -c fsd` so the
+#              server itself shuts down. Use one (or more) of these.
+#   observer — a secondary UPS (typically the desktop's UPS, with its USB
+#              cable plugged into this server). The orchestrator never shuts
+#              down the server because of an observer UPS. Instead, when
+#              action is required (LOWBATT, or offline_wait timer expired),
+#              it sends `upscmd <ups> <upscmd.shutdown>` so the UPS powers
+#              itself off cleanly. This protects the desktop's battery while
+#              the desktop is unattended (e.g. shut down after a previous
+#              outage).
+#
+# In `upsmon.conf`, primary UPSes should be MONITOR'ed with powerval=1 and
+# observer UPSes with powerval=0 — that way an observer's LOWBATT alone won't
+# pull the server down.
 
 ups_devices:
 
   - id: "server-ups"
     nut_name: "server-ups@localhost"
+    role: "primary"
 
     timing:
       desktop_offline_wait: 300       # Desktop off / no desktop → wait 5 min then fsd
@@ -30,3 +42,27 @@ ups_devices:
     desktop:
       agent_url: "http://192.168.50.2:8788"
       mac_address: "AA:BB:CC:DD:EE:FF"  # Required for the suspend → wake flow
+
+  # The desktop's UPS — physically connected to this server via USB.
+  # Server never self-shuts because of this UPS, but coordinates the desktop
+  # and powers the UPS off cleanly when needed.
+  - id: "desktop-ups"
+    nut_name: "desktop-ups@localhost"
+    role: "observer"
+
+    timing:
+      desktop_offline_wait: 300        # Desktop offline → wait then send upscmd shutdown
+      desktop_online_prompt_wait: 180
+      desktop_suspend_wait: 600
+      desktop_shutdown_wait: 60
+      wake_online_timeout: 60
+
+    # Instant command used to power the UPS off cleanly. Driver-dependent —
+    # run `upscmd -l desktop-ups@localhost` to list supported commands.
+    # `shutdown.return` powers the UPS off and back on when mains returns.
+    upscmd:
+      shutdown: "shutdown.return"
+
+    desktop:
+      agent_url: "http://192.168.50.2:8788"
+      mac_address: "AA:BB:CC:DD:EE:FF"

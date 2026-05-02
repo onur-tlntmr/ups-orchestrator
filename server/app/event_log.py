@@ -35,6 +35,8 @@ EV_DESKTOP_TIMEOUT  = "desktop_shutdown_timeout"
 EV_DESKTOP_OBSERVED = "desktop_shutdown_observed"
 EV_SELF_SHUTDOWN    = "server_self_shutdown"
 EV_SERVER_RESTARTED = "server_restarted"
+EV_UPSCMD_SENT      = "upscmd_sent"
+EV_UPSCMD_FAILED    = "upscmd_failed"
 
 
 class EventLog:

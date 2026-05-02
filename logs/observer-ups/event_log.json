@@ -1,0 +1,145 @@
+[
+  {
+    "time": 1777287809,
+    "time_dt": "2026-04-27T14:03:29+03:00",
+    "event": "phase_started",
+    "detail": {
+      "phase": "offline_wait",
+      "role": "observer"
+    }
+  },
+  {
+    "time": 1777287809,
+    "time_dt": "2026-04-27T14:03:29+03:00",
+    "event": "phase_started",
+    "detail": {
+      "phase": "offline_wait",
+      "role": "observer"
+    }
+  },
+  {
+    "time": 1777287809,
+    "time_dt": "2026-04-27T14:03:29+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  },
+  {
+    "time": 1777287809,
+    "time_dt": "2026-04-27T14:03:29+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  },
+  {
+    "time": 1777287731,
+    "time_dt": "2026-04-27T14:02:11+03:00",
+    "event": "phase_started",
+    "detail": {
+      "phase": "offline_wait",
+      "role": "observer"
+    }
+  },
+  {
+    "time": 1777287731,
+    "time_dt": "2026-04-27T14:02:11+03:00",
+    "event": "phase_started",
+    "detail": {
+      "phase": "offline_wait",
+      "role": "observer"
+    }
+  },
+  {
+    "time": 1777287731,
+    "time_dt": "2026-04-27T14:02:11+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  },
+  {
+    "time": 1777287731,
+    "time_dt": "2026-04-27T14:02:11+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  },
+  {
+    "time": 1777284679,
+    "time_dt": "2026-04-27T13:11:19+03:00",
+    "event": "phase_started",
+    "detail": {
+      "phase": "offline_wait",
+      "desktop_state": "offline"
+    }
+  },
+  {
+    "time": 1777284679,
+    "time_dt": "2026-04-27T13:11:19+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  },
+  {
+    "time": 1777284679,
+    "time_dt": "2026-04-27T13:11:19+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  },
+  {
+    "time": 1777283653,
+    "time_dt": "2026-04-27T12:54:13+03:00",
+    "event": "phase_started",
+    "detail": {
+      "phase": "offline_wait",
+      "desktop_state": "offline"
+    }
+  },
+  {
+    "time": 1777283653,
+    "time_dt": "2026-04-27T12:54:13+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  },
+  {
+    "time": 1777283653,
+    "time_dt": "2026-04-27T12:54:13+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  },
+  {
+    "time": 1777283584,
+    "time_dt": "2026-04-27T12:53:04+03:00",
+    "event": "phase_started",
+    "detail": {
+      "phase": "offline_wait",
+      "desktop_state": "offline"
+    }
+  },
+  {
+    "time": 1777283584,
+    "time_dt": "2026-04-27T12:53:04+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  },
+  {
+    "time": 1777283584,
+    "time_dt": "2026-04-27T12:53:04+03:00",
+    "event": "upscmd_sent",
+    "detail": {
+      "command": "shutdown.return"
+    }
+  }
+]

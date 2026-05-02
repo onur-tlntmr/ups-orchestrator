@@ -5,17 +5,29 @@ An intelligent automation system designed to gracefully manage Linux Desktop and
 ## System Architecture
 
 ```text
-  +------------------+          +-------------------+
-  |   Home Server    | <------> |   Desktop Agent   |
-  |  (Orchestrator)  |  [Push]  |    (Local Web)    |
-  +--------+---------+          +---------+---------+
-           |                              |
-           | [Internal]                   | [State Report]
-           v                              | (online/offline)
-  +------------------+                    |
-  | Server Hardware  | <------------------+
-  +------------------+
+  +-----------------+ USB +------------------+ USB +------------------+
+  |   Server UPS    |<----|   Home Server    |---->|   Desktop UPS    |
+  |   (primary)     |     |  (Orchestrator,  |     |    (observer)    |
+  +-----------------+     |    NUT master    |     +--------+---------+
+                          |   for both UPS)  |              |
+                          +--------+---------+              | (powers)
+                                   |                        v
+                                   |  HTTP push     +------------------+
+                                   +--------------->|   Desktop Agent  |
+                                       (state,      |    (DBus, UI)    |
+                                        commands)   +------------------+
 ```
+
+The server is the single point of UPS control. Both UPSes are USB-attached
+to the server, so the orchestrator can shut down the desktop's UPS even when
+the desktop itself is already powered off (e.g. after a previous outage).
+
+* **Primary** UPS (`role: primary`): drives `upsmon -c fsd` to shut the
+  server down on LOWBATT.
+* **Observer** UPS (`role: observer`): never shuts the server down. On
+  LOWBATT or after the configured offline-wait timer, the orchestrator
+  issues `upscmd shutdown.return` so the UPS powers off cleanly,
+  protecting its battery from deep discharge.
 
 ## Features
 
@@ -79,17 +91,27 @@ MODE=netserver
 ```
 
 #### `ups.conf`
-Defines your UPS driver and port. Most modern USB UPS units use `usbhid-ups`.
+Defines your UPS drivers. Both the server's UPS *and* the desktop's UPS (USB
+attached to this server) are declared here. The orchestrator distinguishes
+between them via the `role` field in `ups_config.yml` (see below).
+
 ```ini
-[mecups]
-    driver = nutdrv_qx
+[server-ups]
+    driver = usbhid-ups
     port = auto
-    vendorid = 0001
-    productid = 0000
-    langid_fix = 0x409
+    serial = "<server-ups-serial>"   # pin by serial to survive USB reordering
     desc = "Server UPS"
 
+[desktop-ups]
+    driver = usbhid-ups
+    port = auto
+    serial = "<desktop-ups-serial>"
+    desc = "Desktop UPS (USB-attached to server)"
 ```
+
+> Use `lsusb` and `upsc` to confirm each UPS is reachable. Pinning by
+> `serial` (or `vendorid`/`productid`) avoids cases where two UPSes swap
+> their `/dev/usb/hiddev*` numbers across reboots.
 
 #### `upsd.conf`
 Configures the `upsd` daemon to listen for local connections.
@@ -98,25 +120,50 @@ LISTEN 127.0.0.1 3493
 ```
 
 #### `upsd.users`
-Defines users that can monitor or manage the UPS.
+Defines users that can monitor or manage the UPSes. Two users are needed:
+the standard `upsmon` user (read-only, used by `upsmon` itself) and a
+separate `upscmd_admin` user that the orchestrator uses to issue instant
+commands (e.g. `shutdown.return` on the desktop's UPS).
+
 ```ini
 [upsmon]
-    password  = mypass
+    password = mypass
     upsmon master
+
+[upscmd_admin]
+    password = anotherpass
+    actions  = SET
+    instcmds = ALL
 ```
+
+> Match these credentials with the corresponding env vars:
+> `UPS_UPSCMD_USER` / `UPS_UPSCMD_PASS` in `server/.env`.
 
 ### 3. Monitoring & Scheduler Configuration
 
 #### `upsmon.conf`
-Monitors the UPS and defines the command to run on events.
+Monitors both UPSes and defines the command to run on events. The crucial
+difference between the two is the **powerval** column (4th field):
+
+* `1` — primary UPS (server's own). Counts toward the shutdown threshold:
+  if it reaches LOWBATT, the server shuts itself down.
+* `0` — observer UPS (desktop's). State changes are still reported, but
+  this UPS never causes the server to shut down. The orchestrator handles
+  it via `upscmd <ups> shutdown.return` instead.
+
 ```ini
-MONITOR myups@localhost 1 upsmon mypass master
+MONITOR server-ups@localhost  1 upsmon mypass master
+MONITOR desktop-ups@localhost 0 upsmon mypass master
+
 NOTIFYCMD /sbin/upssched
-NOTIFYFLAG ONBATT EXEC+SYSLOG
-NOTIFYFLAG ONLINE EXEC+SYSLOG
+NOTIFYFLAG ONBATT  EXEC+SYSLOG
+NOTIFYFLAG ONLINE  EXEC+SYSLOG
 NOTIFYFLAG LOWBATT EXEC+SYSLOG
 
-# Ensure the UPS powers off after the server shuts down.
+# Ensure all UPSes power off after the server shuts down.
+# `upsdrvctl shutdown` (invoked by NUT during system shutdown) will issue
+# the configured shutdown command to every UPS in ups.conf — so both the
+# server-ups and desktop-ups will be powered off together.
 POWERDOWNFLAG /etc/killpower
 ```
 
@@ -141,63 +188,37 @@ upsc myups@localhost
 
 ---
 
-## Desktop NUT Setup
+## Desktop side
 
-The desktop has its own UPS physically attached and runs NUT independently.
-There is **no slave link** between server and desktop — each host is master of
-its own UPS only. Cross-machine coordination (user prompt, force shutdown,
-WoL) is handled entirely by the orchestrator over HTTP.
+The desktop does **not** run NUT in this architecture. Both UPSes (the
+server's and the desktop's) are USB-attached to the server, so the server
+is the single point of UPS coordination. This solves the "second outage
+while desktop is already off" problem — the server can still cleanly power
+off the desktop's UPS to protect its battery.
 
-### 1. Install NUT on the desktop
-```bash
-sudo dnf install nut        # Fedora/RHEL
-sudo apt install nut        # Debian/Ubuntu
-```
+The desktop only runs the orchestrator agent. When the server pushes
+`critical_shutdown`, the agent shuts the host down via its built-in
+fallback chain:
 
-### 2. Desktop `ups.conf`
-```ini
-[desktop-ups]
-    driver = usbhid-ups
-    port = auto
-    desc = "Desktop UPS"
-```
+1. `sudo upsmon -c fsd` (preserved for legacy installs that still run NUT
+   on the desktop — fails silently if NUT isn't installed)
+2. `systemctl poweroff`
+3. `sudo /sbin/shutdown -h now`
 
-### 3. Desktop `upsd.conf` / `upsd.users`
-```ini
-LISTEN 127.0.0.1 3493
-```
-```ini
-[upsmon]
-    password = mypass
-    upsmon master
-```
+Only the third one needs a sudoers rule on the desktop:
 
-### 4. Desktop `upsmon.conf`
-The desktop monitors only its own UPS as master. When it reaches critical
-state, `upsmon -c fsd` shuts down the machine and — via `POWERDOWNFLAG` — the
-UPS powers off afterwards.
-```ini
-MONITOR desktop-ups@localhost 1 upsmon mypass master
-
-POWERDOWNFLAG /etc/killpower
-```
-
-### 5. Allow the desktop agent to run `upsmon -c fsd`
-The orchestrator pushes a `critical_shutdown` command over HTTP; the desktop
-agent executes `sudo upsmon -c fsd` locally. Add a sudoers entry:
 ```bash
 sudo visudo -f /etc/sudoers.d/ups-orchestrator-agent
 ```
+
 ```
 # Adjust the user to match the desktop agent's account
-# Two rules needed: without -P (no pid) and with -P <pid> (NUT 2.8+)
-your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd
-your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd -P *
+your-user ALL=(root) NOPASSWD: /sbin/shutdown
 ```
 
-> **Note:** The path to `upsmon` may vary by distro. Use `which upsmon` to confirm.
-> Common locations: `/usr/sbin/upsmon`, `/sbin/upsmon`, `/usr/bin/upsmon`.
-> Set `UPS_UPSMON_BIN` in `.env` to match, and update the sudoers path accordingly.
+> If you keep NUT on the desktop (legacy / mixed setup), also add the
+> `upsmon -c fsd` rules — see git history of this file for the previous
+> sudoers block.
 
 ---
 
@@ -262,13 +283,16 @@ python desktop/app/agent.py
 
 ## Usage & Simulation
 
+Substitute `<ups_id>` below with the id from `ups_config.yml`
+(e.g. `server-ups`, `desktop-ups`).
+
 ### Test Power Outage (ONBATT)
 ```bash
 curl -X POST \
   -H "X-UPS-Token: secret-token" \
   -H "Content-Type: application/json" \
   -d '{"event": "ONBATT"}' \
-  http://localhost:8787/api/ups/event
+  http://localhost:8787/api/ups/<ups_id>/event
 ```
 
 ### Test Power Restoration (ONLINE)
@@ -277,7 +301,12 @@ curl -X POST \
   -H "X-UPS-Token: secret-token" \
   -H "Content-Type: application/json" \
   -d '{"event": "ONLINE"}' \
-  http://localhost:8787/api/ups/event
+  http://localhost:8787/api/ups/<ups_id>/event
+```
+
+### List configured UPSes
+```bash
+curl -H "X-UPS-Token: secret-token" http://localhost:8787/api/ups/
 ```
 
 ---

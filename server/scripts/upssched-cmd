@@ -1,14 +1,19 @@
 #!/bin/bash
 
-# NUT upssched-cmd script for UPS Orchestrator
+# NUT upssched-cmd script for UPS Orchestrator (multi-UPS aware).
+#
+# Event tags from upssched.conf are encoded as `<ups_id>:<event>` so this
+# wrapper knows which UPS triggered the event. The orchestrator's response
+# tells us whether to fire the safety-net server shutdown — only primary
+# UPSes on LOWBATT do, observer UPSes never.
 
 set -u
 
-# Load .env file if it exists
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/../.env"
 if [ -f "$ENV_FILE" ]; then
     set -a
+    # shellcheck disable=SC1090
     source "$ENV_FILE"
     set +a
 fi
@@ -17,14 +22,24 @@ PORT="${UPS_SERVER_PORT:-8787}"
 API_BASE="http://127.0.0.1:$PORT"
 TOKEN="${UPS_SHARED_TOKEN:-change-me}"
 
-# UPS device ID as defined in ups_config.yml
-DEVICE_ID="${UPS_DEVICE_ID:-main-ups}"
+ARG="${1:-}"
 
-EVENT="${1:-}"
+if [ -z "$ARG" ]; then
+    echo "Usage: upssched-cmd <ups_id>:<event>" >&2
+    exit 1
+fi
+
+# Split on the first colon — event names can contain underscores but not colons.
+DEVICE_ID="${ARG%%:*}"
+EVENT="${ARG#*:}"
+
+if [ "$DEVICE_ID" = "$ARG" ] || [ -z "$EVENT" ]; then
+    echo "Malformed event tag: '$ARG' (expected '<ups_id>:<event>')" >&2
+    exit 1
+fi
 
 post_event() {
     local event="$1"
-
     curl -sS -X POST \
         -H "X-UPS-Token: $TOKEN" \
         -H "Content-Type: application/json" \
@@ -41,26 +56,22 @@ shutdown_homeserver() {
 }
 
 case "$EVENT" in
-    ONBATT)
-        post_event "ONBATT"
-        ;;
-
-    ONLINE)
-        post_event "ONLINE"
+    ONBATT|ONLINE|desktop_suspend_due)
+        post_event "$EVENT" >/dev/null
         ;;
 
     LOWBATT)
-        post_event "LOWBATT"
-        sleep 5
-        shutdown_homeserver
-        ;;
-
-    desktop_suspend_due)
-        post_event "desktop_suspend_due"
+        # Capture the response — it tells us whether to fire the shell-level
+        # safety-net shutdown (only true for primary-role UPSes).
+        response="$(post_event "$EVENT")"
+        if printf '%s' "$response" | grep -q '"shutdown_server"[[:space:]]*:[[:space:]]*true'; then
+            sleep 5
+            shutdown_homeserver
+        fi
         ;;
 
     *)
-        echo "Unknown event: $EVENT" >&2
+        echo "Unknown event for $DEVICE_ID: $EVENT" >&2
         exit 1
         ;;
 esac

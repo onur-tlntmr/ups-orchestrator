@@ -22,6 +22,15 @@ UNKNOWN_POLL_INTERVAL = int(os.environ.get("UPS_POLL_INTERVAL", 30))
 REQUEST_TIMEOUT_SHORT = int(os.environ.get("UPS_REQUEST_TIMEOUT_SHORT", 5))
 REQUEST_TIMEOUT_LONG = int(os.environ.get("UPS_REQUEST_TIMEOUT_LONG", 30))
 
+UPSCMD_BIN = os.environ.get("UPS_UPSCMD_BIN", "upscmd")
+UPSCMD_USER = os.environ.get("UPS_UPSCMD_USER", "")
+UPSCMD_PASS = os.environ.get("UPS_UPSCMD_PASS", "")
+
+# UPS roles
+ROLE_PRIMARY = "primary"    # this server's UPS — drives server self-shutdown
+ROLE_OBSERVER = "observer"  # secondary UPS (e.g. desktop's) — never shuts down server,
+                            # uses upscmd instead of upsmon -c fsd
+
 
 @dataclass
 class TimingConfig:
@@ -50,12 +59,26 @@ class DesktopConfig:
 
 
 @dataclass
+class UpscmdConfig:
+    # Instant command name to issue when an observer-mode UPS must power off.
+    # Driver-dependent. Common values: "shutdown.return", "shutdown.stayoff",
+    # "shutdown.default". Use `upscmd -l <ups>` to list supported commands.
+    shutdown: str = "shutdown.return"
+
+
+@dataclass
 class UPSDeviceConfig:
     id: str
     nut_name: str
+    role: str = ROLE_PRIMARY
     timing: TimingConfig = field(default_factory=TimingConfig)
     desktop: Optional[DesktopConfig] = None
     wol_relay: Optional[WolRelayConfig] = None
+    upscmd: UpscmdConfig = field(default_factory=UpscmdConfig)
+
+    @property
+    def is_observer(self) -> bool:
+        return self.role == ROLE_OBSERVER
 
 
 def _parse_timing(d: dict) -> TimingConfig:
@@ -109,12 +132,27 @@ def _load_ups_devices() -> list[UPSDeviceConfig]:
 
         timing = _parse_timing(d.get("timing"))
 
+        upscmd_cfg = UpscmdConfig()
+        if d.get("upscmd"):
+            upscmd_cfg = UpscmdConfig(
+                shutdown=d["upscmd"].get("shutdown", UpscmdConfig.shutdown),
+            )
+
+        role = d.get("role", ROLE_PRIMARY)
+        if role not in (ROLE_PRIMARY, ROLE_OBSERVER):
+            raise ValueError(
+                f"Invalid role {role!r} for UPS {d['id']!r}; "
+                f"expected one of: {ROLE_PRIMARY!r}, {ROLE_OBSERVER!r}"
+            )
+
         devices.append(UPSDeviceConfig(
             id=d["id"],
             nut_name=d["nut_name"],
+            role=role,
             timing=timing,
             desktop=desktop,
             wol_relay=wol_relay,
+            upscmd=upscmd_cfg,
         ))
 
     return devices

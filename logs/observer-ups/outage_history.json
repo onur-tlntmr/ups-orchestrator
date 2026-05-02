@@ -1,0 +1,65 @@
+[
+  {
+    "outage_start": 1777287809,
+    "outage_start_dt": "2026-04-27T14:03:29+03:00",
+    "outage_end": null,
+    "outage_end_dt": null,
+    "duration_seconds": null,
+    "duration_human": null,
+    "outcome": null
+  },
+  {
+    "outage_start": 1777287809,
+    "outage_start_dt": "2026-04-27T14:03:29+03:00",
+    "outage_end": 1777287809,
+    "outage_end_dt": "2026-04-27T14:03:29+03:00",
+    "duration_seconds": 0,
+    "duration_human": "0s",
+    "outcome": "shutdown_initiated"
+  },
+  {
+    "outage_start": 1777287731,
+    "outage_start_dt": "2026-04-27T14:02:11+03:00",
+    "outage_end": 1777287809,
+    "outage_end_dt": "2026-04-27T14:03:29+03:00",
+    "duration_seconds": 78,
+    "duration_human": "1m 18s",
+    "outcome": "unknown"
+  },
+  {
+    "outage_start": 1777287731,
+    "outage_start_dt": "2026-04-27T14:02:11+03:00",
+    "outage_end": 1777287731,
+    "outage_end_dt": "2026-04-27T14:02:11+03:00",
+    "duration_seconds": 0,
+    "duration_human": "0s",
+    "outcome": "shutdown_initiated"
+  },
+  {
+    "outage_start": 1777284679,
+    "outage_start_dt": "2026-04-27T13:11:19+03:00",
+    "outage_end": 1777284679,
+    "outage_end_dt": "2026-04-27T13:11:19+03:00",
+    "duration_seconds": 0,
+    "duration_human": "0s",
+    "outcome": "shutdown_initiated"
+  },
+  {
+    "outage_start": 1777283653,
+    "outage_start_dt": "2026-04-27T12:54:13+03:00",
+    "outage_end": 1777283653,
+    "outage_end_dt": "2026-04-27T12:54:13+03:00",
+    "duration_seconds": 0,
+    "duration_human": "0s",
+    "outcome": "shutdown_initiated"
+  },
+  {
+    "outage_start": 1777283584,
+    "outage_start_dt": "2026-04-27T12:53:04+03:00",
+    "outage_end": 1777283653,
+    "outage_end_dt": "2026-04-27T12:54:13+03:00",
+    "duration_seconds": 69,
+    "duration_human": "1m 9s",
+    "outcome": "unknown"
+  }
+]
