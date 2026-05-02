@@ -2,3 +2,11 @@
 .runtime-state
 .venv*/**
 venv/**
+
+**/__pycache__/**
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
