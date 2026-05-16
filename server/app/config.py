@@ -155,6 +155,18 @@ def _load_ups_devices() -> list[UPSDeviceConfig]:
             upscmd=upscmd_cfg,
         ))
 
+    # If a primary UPS has no desktop config, inherit it from the observer UPS.
+    # Fails if there are multiple observers (ambiguous — add a desktop: block explicitly).
+    observers = [dev for dev in devices if dev.is_observer]
+    for dev in devices:
+        if not dev.is_observer and dev.desktop is None and observers:
+            if len(observers) > 1:
+                raise ValueError(
+                    f"UPS {dev.id!r} has no desktop config and there are multiple observer "
+                    f"UPSes. Add a desktop: block explicitly."
+                )
+            dev.desktop = observers[0].desktop
+
     return devices
 
 
