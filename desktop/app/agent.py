@@ -177,9 +177,9 @@ def do_suspend(command_id: str) -> None:
     do_shutdown(command_id, fail_safe=True)
 
 
-def do_shutdown(command_id: str, fail_safe: bool = False) -> None:
+def do_shutdown(command_id: str, fail_safe: bool = False, command_name: str = "critical_shutdown") -> None:
     if not fail_safe:
-        status = preflight(command_id, "critical_shutdown")
+        status = preflight(command_id, command_name)
         if status == PreflightStatus.REJECTED:
             logger.warning("Preflight rejected for critical_shutdown")
             ack(command_id, "failed", {"reason": "preflight_rejected"})
@@ -252,7 +252,7 @@ class LocalHandler(BaseHTTPRequestHandler):
                             logger.info("Executing shutdown action")
                             # fail_safe=False: preflight checks if command still valid
                             # (power may have been restored while dialog was open)
-                            do_shutdown(cmd_id, fail_safe=False)
+                            do_shutdown(cmd_id, fail_safe=False, command_name="ups_state")
                         else:
                             logger.info(f"Command {cmd_id} cancelled")
                             ack(cmd_id, "cancelled", {"reason": "user_cancelled"})
