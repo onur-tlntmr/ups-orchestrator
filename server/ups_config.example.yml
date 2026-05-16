@@ -29,7 +29,7 @@ ups_devices:
     timing:
       desktop_offline_wait: 300       # Desktop off / no desktop → wait 5 min then fsd
       desktop_online_prompt_wait: 180 # Desktop online → prompt user, give 180 s
-      desktop_suspend_wait: 600       # Desktop suspended → wait 10 min before waking
+      desktop_suspend_wait: 360       # Desktop suspended → wait ~6.5 min before waking
       desktop_shutdown_wait: 60       # After issuing shutdown, wait 60 s for confirmation
       wake_online_timeout: 60         # After WoL, wait up to 60 s for desktop to come online
 
@@ -52,7 +52,7 @@ ups_devices:
     timing:
       desktop_offline_wait: 300        # Desktop offline → wait then send upscmd shutdown
       desktop_online_prompt_wait: 180
-      desktop_suspend_wait: 600
+      desktop_suspend_wait: 400
       desktop_shutdown_wait: 60
       wake_online_timeout: 60
 

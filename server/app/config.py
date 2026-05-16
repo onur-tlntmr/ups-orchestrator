@@ -39,7 +39,7 @@ class TimingConfig:
     # Desktop online → notify user, wait for response then force shutdown
     desktop_online_prompt_wait: int = 180    # 180 seconds
     # Desktop suspended → wait, then wake & shut down
-    desktop_suspend_wait: int = 600          # 10 minutes
+    desktop_suspend_wait: int = 360
     # After issuing desktop shutdown, wait this long for confirmation before self-shutdown
     desktop_shutdown_wait: int = 60
     # After WoL, how long to wait for desktop to report online before pushing shutdown
