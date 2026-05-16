@@ -10,6 +10,7 @@ Supports two sending strategies:
 import logging
 import socket
 import subprocess
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,8 @@ def _send_local(magic: bytes, iface: str) -> None:
 
     # Method 1: raw Layer 2 Ethernet frame — ether-wake equivalent (needs CAP_NET_RAW)
     try:
-        frame = b"\xff" * 6 + b"\x00" * 6 + b"\x08\x42" + magic
+        src_mac = _mac_for_iface(iface)
+        frame = b"\xff" * 6 + src_mac + b"\x08\x42" + magic
         with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0842)) as s:
             s.bind((iface, 0))
             s.send(frame)
@@ -141,6 +143,15 @@ def iface_for_ip(target_ip: str) -> str:
     except Exception:
         pass
     return "eth0"
+
+
+def _mac_for_iface(iface: str) -> bytes:
+    """Return the hardware MAC address of iface as 6 bytes, or 6 zero bytes on failure."""
+    try:
+        mac_str = Path(f"/sys/class/net/{iface}/address").read_text().strip()
+        return bytes.fromhex(mac_str.replace(":", ""))
+    except Exception:
+        return b"\x00" * 6
 
 
 def _broadcast_for_iface(iface: str) -> str:
