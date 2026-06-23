@@ -55,6 +55,13 @@ ups_devices:
       desktop_suspend_wait: 400
       desktop_shutdown_wait: 60
       wake_online_timeout: 60
+      # Once this observer's grace timer expires it does NOT cut power immediately:
+      # it waits for the desktop to be confirmed down by the primary (which may
+      # still be waking & shutting it down), so it never yanks power from a
+      # running/suspended desktop. This is the battery-safety backstop for how long
+      # to hold. Keep it comfortably above the primary's worst case
+      # (desktop_suspend_wait + wake_online_timeout + desktop_shutdown_wait).
+      observer_poweroff_max_wait: 1800
 
     # Instant command used to power the UPS off cleanly. Driver-dependent —
     # run `upscmd -l desktop-ups@localhost` to list supported commands.
