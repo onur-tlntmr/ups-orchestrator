@@ -238,6 +238,10 @@ def preflight(ups_id: str):
     return jsonify({"ok": True, "allow": True})
 
 
+for ctx in CONTEXTS.values():
+    ctx.register_peers(list(CONTEXTS.values()))
+
+
 if __name__ == "__main__":
     for ctx in CONTEXTS.values():
         ctx.reset_state_on_startup()

@@ -59,10 +59,43 @@ class UPSContext:
 
         self._action_lock = threading.Lock()
         self._deadline_timer: Optional[threading.Timer] = None
+        # Set by register_peers() once all contexts exist. Lets an observer find
+        # the primary that coordinates the same desktop, so it doesn't cut the
+        # desktop's UPS power mid-coordination.
+        self._peers: list["UPSContext"] = []
         logs_dir = LOGS_DIR / device.id
         logs_dir.mkdir(parents=True, exist_ok=True)
         self._outage_log = OutageLog(logs_dir)
         self._event_log = EventLog(logs_dir)
+
+    def register_peers(self, contexts):
+        """Make the other UPS contexts visible to this one (called at startup)."""
+        self._peers = [c for c in contexts if c is not self]
+
+    def _desktop_owner_peers(self) -> list["UPSContext"]:
+        """Peer contexts (the primary/-ies) that coordinate this device's desktop.
+
+        Matched by the shared desktop agent URL — a primary inherits its desktop
+        config from the observer, so they point at the same desktop.
+        """
+        if not self.device.desktop:
+            return []
+        my_url = self.device.desktop.agent_url
+        return [
+            c for c in self._peers
+            if not c.device.is_observer
+            and c.device.desktop
+            and c.device.desktop.agent_url == my_url
+        ]
+
+    @staticmethod
+    def _peer_reports_desktop_down(peer: "UPSContext") -> bool:
+        """True once the desktop has positively reported it is going away.
+
+        The desktop pushes 'shutting_down'/'offline' only to the primary's ups_id,
+        so the observer reads it from the owning primary's desktop state.
+        """
+        return peer.get_desktop_state().get("status") in ("offline", "shutting_down")
 
     # -------------------------------------------------------------------------
     # State helpers
@@ -239,6 +272,58 @@ class UPSContext:
             self._power_off_ups()
         else:
             self._self_shutdown()
+
+    def _observer_power_off_when_desktop_safe(self):
+        """Observer graceful power-off worker.
+
+        An observer powers the *desktop's* UPS. Cutting that power while the
+        desktop is still alive (online or merely suspended) yanks the cord on a
+        running machine — and races the primary, which may still be about to
+        wake the desktop via WoL and shut it down cleanly. So instead of powering
+        off the instant our grace timer expires, we hold until the desktop is
+        confirmed down by the primary that owns it.
+
+        Backstops so the battery is still protected if the desktop never goes
+        down: this UPS hitting low battery, or `observer_poweroff_max_wait`.
+        """
+        owners = self._desktop_owner_peers()
+        if not owners:
+            # No primary coordinates this desktop here (e.g. standalone observer
+            # or no desktop) — nothing to wait for, power off as before.
+            self._power_off_ups()
+            return
+
+        max_wait = self.device.timing.observer_poweroff_max_wait
+        deadline = now_ts() + max_wait
+        logger.info(
+            f"[{self.device.id}] Observer: holding UPS power-off until desktop is "
+            f"confirmed down (max {max_wait}s)"
+        )
+
+        while now_ts() < deadline:
+            if self.get_orchestrator_state().get("mode") != MODE_SHUTTING_DOWN:
+                logger.info(f"[{self.device.id}] Power restored — aborting UPS power-off")
+                return
+            if any(self._peer_reports_desktop_down(o) for o in owners):
+                logger.info(f"[{self.device.id}] Desktop confirmed down — powering off UPS")
+                self._event_log.record(EV_DESKTOP_CONFIRMED, {"source": "primary"})
+                break
+            status = self.read_ups_status()
+            if status and "LB" in status:
+                logger.warning(
+                    f"[{self.device.id}] UPS low battery while waiting for desktop — "
+                    f"powering off UPS now"
+                )
+                break
+            time.sleep(5)
+        else:
+            logger.warning(
+                f"[{self.device.id}] Desktop not confirmed down within {max_wait}s — "
+                f"powering off UPS anyway"
+            )
+            self._event_log.record(EV_DESKTOP_TIMEOUT)
+
+        self._power_off_ups()
 
     def _wait_for_desktop_then_terminal_action(self):
         wait = self.device.timing.desktop_shutdown_wait
@@ -471,6 +556,16 @@ class UPSContext:
             orch["mode"] = MODE_SHUTTING_DOWN
             self.save_orchestrator_state(orch)
             self._outage_log.record_end("shutdown_initiated")
+
+        if self.device.is_observer:
+            # An observer never coordinates the desktop and only ever sits in
+            # OFFLINE_WAIT. On a true emergency (low battery) power off at once —
+            # the desktop can't be saved anyway. Otherwise hold the UPS power-off
+            # until the primary has brought the desktop down cleanly.
+            emergency = reason in ("low_battery", "low_battery_event")
+            target = self._terminal_action if emergency else self._observer_power_off_when_desktop_safe
+            threading.Thread(target=target, daemon=True).start()
+            return
 
         if phase == PHASE_USER_PROMPT:
             threading.Thread(target=self._action_force_shutdown_desktop, daemon=True).start()
