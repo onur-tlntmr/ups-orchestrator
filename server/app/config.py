@@ -44,6 +44,12 @@ class TimingConfig:
     desktop_shutdown_wait: int = 60
     # After WoL, how long to wait for desktop to report online before pushing shutdown
     wake_online_timeout: int = 60
+    # Observer only: once its own grace timer expires, how long to keep holding the
+    # UPS power-off while the primary still coordinates the desktop (wakes & shuts it
+    # down). Pure battery-safety backstop — the real trigger is "desktop confirmed
+    # down" or this UPS hitting low battery. Must exceed the primary's worst-case
+    # suspend_wait + wake_online_timeout + desktop_shutdown_wait.
+    observer_poweroff_max_wait: int = 1800
 
 
 @dataclass
@@ -90,6 +96,7 @@ def _parse_timing(d: dict) -> TimingConfig:
         desktop_suspend_wait=d.get("desktop_suspend_wait", TimingConfig.desktop_suspend_wait),
         desktop_shutdown_wait=d.get("desktop_shutdown_wait", TimingConfig.desktop_shutdown_wait),
         wake_online_timeout=d.get("wake_online_timeout", TimingConfig.wake_online_timeout),
+        observer_poweroff_max_wait=d.get("observer_poweroff_max_wait", TimingConfig.observer_poweroff_max_wait),
     )
 
 
