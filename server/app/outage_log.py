@@ -1,26 +1,22 @@
-"""Outage duration history — persisted as a rotating JSON list.
+"""Outage log — two-file design.
 
-Each entry records a single power outage interval:
-  {
-    "outage_start":     <unix timestamp>,
-    "outage_start_dt":  <ISO 8601>,
-    "outage_end":       <unix timestamp | null>,
-    "outage_end_dt":    <ISO 8601 | null>,
-    "duration_seconds": <int | null>,
-    "duration_human":   <str | null>,   e.g. "2m 15s"
-    "outcome":          "power_restored" | "power_restored_after_reboot"
-                        | "shutdown_initiated" | "unknown" | null
-  }
+outage_state.json    — mutable; tracks the current in-progress outage (if any)
+outage_history.jsonl — append-only; one *completed* outage record per line
 
-The file is capped at OUTAGE_LOG_MAX_ENTRIES (newest entries kept).
+Completed record fields:
+  {"outage_start": <unix ts>, "outage_start_dt": <ISO 8601>,
+   "outage_end": <unix ts>, "outage_end_dt": <ISO 8601>,
+   "duration_seconds": <int>, "duration_human": <str>,
+   "outcome": "power_restored" | "power_restored_after_reboot"
+              | "shutdown_initiated" | "unknown"}
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Optional
 
-from config import OUTAGE_LOG_MAX_ENTRIES
-from state_store import read_json, write_json, now_ts, to_iso
+from state_store import now_ts, to_iso
 
 logger = logging.getLogger(__name__)
 
@@ -38,84 +34,109 @@ def _human_duration(seconds: int) -> str:
 
 class OutageLog:
     def __init__(self, logs_dir: Path):
-        self._path = logs_dir / "outage_history.json"
+        self._state_path = logs_dir / "outage_state.json"
+        self._history_path = logs_dir / "outage_history.jsonl"
 
     def record_start(self, onbatt_ts: int) -> None:
-        """Open a new outage entry. Closes any unclosed entry first."""
-        entries = self._read()
-        if entries and entries[0].get("outage_end") is None:
-            duration = onbatt_ts - entries[0]["outage_start"]
-            entries[0]["outage_end"] = onbatt_ts
-            entries[0]["outage_end_dt"] = to_iso(onbatt_ts)
-            entries[0]["duration_seconds"] = duration
-            entries[0]["duration_human"] = _human_duration(duration)
-            entries[0]["outcome"] = "unknown"
+        """Open a new outage. If a previous one was left open, close it first."""
+        state = self._read_state()
+        if state is not None:
+            self._append_completed(state, outcome="unknown", end_ts=onbatt_ts)
             logger.warning("outage_log: previous entry was unclosed — closed with outcome=unknown")
 
-        entries.insert(0, {
+        self._write_state({
             "outage_start": onbatt_ts,
             "outage_start_dt": to_iso(onbatt_ts),
-            "outage_end": None,
-            "outage_end_dt": None,
-            "duration_seconds": None,
-            "duration_human": None,
-            "outcome": None,
         })
-        self._write(entries)
         logger.info(f"outage_log: outage started at {to_iso(onbatt_ts)}")
 
     def record_end(self, outcome: str, end_ts: Optional[int] = None) -> None:
-        """Close the most recent open outage entry."""
-        entries = self._read()
-        if not entries or entries[0].get("outage_end") is not None:
+        """Close the current open outage.
+
+        For shutdown_initiated the state is kept so resolve_on_startup()
+        can record the real offline duration after the server restarts.
+        All other outcomes are appended to history immediately.
+        """
+        state = self._read_state()
+        if state is None:
             logger.debug("outage_log: record_end called but no open entry")
             return
 
         ts = end_ts or now_ts()
-        duration = ts - entries[0]["outage_start"]
-        entries[0]["outage_end"] = ts
-        entries[0]["outage_end_dt"] = to_iso(ts)
-        entries[0]["duration_seconds"] = duration
-        entries[0]["duration_human"] = _human_duration(duration)
-        entries[0]["outcome"] = outcome
-        self._write(entries)
-        logger.info(
-            f"outage_log: outage ended — outcome={outcome}, "
-            f"duration={_human_duration(duration)} ({duration}s)"
-        )
+
+        if outcome == "shutdown_initiated":
+            state["outcome"] = "shutdown_initiated"
+            state["shutdown_ts"] = ts
+            self._write_state(state)
+            logger.info("outage_log: shutdown initiated — will finalize on restart")
+        else:
+            duration = ts - state["outage_start"]
+            self._append_completed(state, outcome=outcome, end_ts=ts)
+            self._clear_state()
+            logger.info(
+                f"outage_log: outage ended — outcome={outcome}, "
+                f"duration={_human_duration(duration)} ({duration}s)"
+            )
 
     def resolve_on_startup(self) -> None:
-        """Called on server startup. If the last outage ended with a shutdown,
-        the server restart time is the real power-restored time. Update the
-        entry with the actual offline duration (outage_start → restart_time).
+        """Called on server startup.
+
+        If a shutdown was initiated, the restart time is the real end of the
+        outage. Append the finalized record to history and clear state.
         """
-        entries = self._read()
-        if not entries or entries[0].get("outcome") != "shutdown_initiated":
+        state = self._read_state()
+        if state is None or state.get("outcome") != "shutdown_initiated":
             return
 
         restart_ts = now_ts()
-        onbatt_ts = entries[0].get("outage_start")
+        onbatt_ts = state.get("outage_start")
 
         if isinstance(onbatt_ts, (int, float)) and onbatt_ts > 0:
             real_duration = int(restart_ts - onbatt_ts)
-            entries[0]["duration_seconds"] = real_duration
-            entries[0]["duration_human"] = _human_duration(real_duration)
             logger.info(
-                f"outage_log: resolved shutdown outage — real offline duration="
+                f"outage_log: resolved shutdown — real offline duration="
                 f"{_human_duration(real_duration)} ({real_duration}s)"
             )
         else:
-            entries[0]["duration_seconds"] = None
-            entries[0]["duration_human"] = "unknown"
             logger.warning("outage_log: outage_start missing or invalid — duration unknown")
 
-        entries[0]["outage_end"] = restart_ts
-        entries[0]["outage_end_dt"] = to_iso(restart_ts)
-        entries[0]["outcome"] = "power_restored_after_reboot"
-        self._write(entries)
+        self._append_completed(state, outcome="power_restored_after_reboot", end_ts=restart_ts)
+        self._clear_state()
 
-    def _read(self) -> list:
-        return read_json(self._path, [])
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-    def _write(self, entries: list) -> None:
-        write_json(self._path, entries[:OUTAGE_LOG_MAX_ENTRIES])
+    def _append_completed(self, state: dict, outcome: str, end_ts: int) -> None:
+        onbatt_ts = state["outage_start"]
+        duration = int(end_ts - onbatt_ts)
+        entry = {
+            "outage_start": onbatt_ts,
+            "outage_start_dt": state["outage_start_dt"],
+            "outage_end": end_ts,
+            "outage_end_dt": to_iso(end_ts),
+            "duration_seconds": duration,
+            "duration_human": _human_duration(duration),
+            "outcome": outcome,
+        }
+        self._history_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._history_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    def _read_state(self) -> Optional[dict]:
+        if not self._state_path.exists():
+            return None
+        try:
+            return json.loads(self._state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def _write_state(self, state: dict) -> None:
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._state_path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def _clear_state(self) -> None:
+        if self._state_path.exists():
+            self._state_path.unlink()
