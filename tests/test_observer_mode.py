@@ -39,6 +39,21 @@ def _make_ctx(role: str, tmp: Path) -> UPSContext:
     return UPSContext(device, tmp)
 
 
+def _make_primary_and_observer(tmp: Path):
+    """A primary + observer sharing the same desktop, with peers registered."""
+    primary = _make_ctx(ROLE_PRIMARY, tmp)
+    observer = _make_ctx(ROLE_OBSERVER, tmp)
+    primary.register_peers([primary, observer])
+    observer.register_peers([primary, observer])
+    return primary, observer
+
+
+_SHUTTING_DOWN = {
+    "mode": "shutting_down", "phase": "offline_wait",
+    "phase_deadline": 0, "onbatt_since": 1, "last_event": "ONBATT", "updated_at": 1,
+}
+
+
 def test_observer_power_off_invokes_upscmd_with_auth(monkeypatch):
     monkeypatch.setattr(config, "UPSCMD_BIN", "/usr/sbin/upscmd")
     monkeypatch.setattr(config, "UPSCMD_USER", "upscmd_admin")
@@ -171,6 +186,112 @@ def test_observer_ignores_desktop_state_change(monkeypatch):
         ctx.notify_desktop_state_change("offline")
 
         assert terminal_called == [], "observer must not trigger terminal action on desktop state change"
+
+
+def test_observer_powers_off_once_primary_reports_desktop_down(monkeypatch):
+    """Graceful observer power-off must hold until the primary that owns the
+    desktop reports it is down, then power off — never before."""
+    with tempfile.TemporaryDirectory() as tmp:
+        primary, observer = _make_primary_and_observer(Path(tmp))
+        observer.save_orchestrator_state(dict(_SHUTTING_DOWN))
+        # The desktop pushed 'shutting_down' to the PRIMARY's ups_id.
+        primary.save_desktop_state({"status": "shutting_down"})
+
+        powered_off = []
+        monkeypatch.setattr(observer, "_power_off_ups", lambda: powered_off.append(True) or True)
+
+        observer._observer_power_off_when_desktop_safe()
+
+        assert powered_off == [True], "observer must power off once desktop is confirmed down"
+
+
+def test_observer_holds_power_off_while_desktop_up_then_aborts_on_restore(monkeypatch):
+    """While the desktop is still alive, the observer must not power off; if power
+    is restored (mode leaves shutting_down) it aborts without cutting power."""
+    with tempfile.TemporaryDirectory() as tmp:
+        primary, observer = _make_primary_and_observer(Path(tmp))
+        # Desktop still online — must never be a reason to power off.
+        primary.save_desktop_state({"status": "online"})
+        # Power restored: orchestrator no longer in shutting_down.
+        observer.save_orchestrator_state({
+            "mode": "idle", "phase": None, "phase_deadline": None,
+            "onbatt_since": None, "last_event": "ONLINE", "updated_at": 1,
+        })
+
+        powered_off = []
+        monkeypatch.setattr(observer, "_power_off_ups", lambda: powered_off.append(True))
+
+        observer._observer_power_off_when_desktop_safe()
+
+        assert powered_off == [], "observer must not cut power when desktop is up / power restored"
+
+
+def test_observer_lowbatt_backstop_powers_off_while_waiting(monkeypatch):
+    """If this UPS hits low battery while waiting for the desktop, power off."""
+    with tempfile.TemporaryDirectory() as tmp:
+        primary, observer = _make_primary_and_observer(Path(tmp))
+        observer.save_orchestrator_state(dict(_SHUTTING_DOWN))
+        primary.save_desktop_state({"status": "online"})  # desktop never goes down
+        monkeypatch.setattr(observer, "read_ups_status", lambda: "OB LB")
+
+        powered_off = []
+        monkeypatch.setattr(observer, "_power_off_ups", lambda: powered_off.append(True))
+
+        observer._observer_power_off_when_desktop_safe()
+
+        assert powered_off == [True], "low battery must force power off as a backstop"
+
+
+def test_observer_without_owning_primary_powers_off_immediately(monkeypatch):
+    """A standalone observer (no primary coordinates its desktop) keeps the old
+    behaviour: power off without waiting."""
+    with tempfile.TemporaryDirectory() as tmp:
+        observer = _make_ctx(ROLE_OBSERVER, Path(tmp))
+        observer.register_peers([observer])  # no primary peer
+        observer.save_orchestrator_state(dict(_SHUTTING_DOWN))
+
+        powered_off = []
+        monkeypatch.setattr(observer, "_power_off_ups", lambda: powered_off.append(True))
+
+        observer._observer_power_off_when_desktop_safe()
+
+        assert powered_off == [True]
+
+
+def test_observer_phase_deadline_defers_lowbatt_powers_off_now(monkeypatch):
+    """_execute_phase_action: graceful (phase_deadline) → deferred worker;
+    low battery → immediate terminal action."""
+    with tempfile.TemporaryDirectory() as tmp:
+        primary, observer = _make_primary_and_observer(Path(tmp))
+        observer.save_orchestrator_state({
+            "mode": "monitoring_battery", "phase": "offline_wait",
+            "phase_deadline": 0, "onbatt_since": 1, "last_event": "ONBATT", "updated_at": 1,
+        })
+
+        import ups_context as ups_ctx_mod
+
+        class InlineThread:
+            def __init__(self, target=None, daemon=None, **kw):
+                self._target = target
+            def start(self):
+                self._target()
+
+        calls = []
+        monkeypatch.setattr(observer, "_observer_power_off_when_desktop_safe",
+                            lambda: calls.append("deferred"))
+        monkeypatch.setattr(observer, "_terminal_action", lambda: calls.append("immediate"))
+        monkeypatch.setattr(ups_ctx_mod.threading, "Thread", InlineThread)
+
+        observer._execute_phase_action(reason="phase_deadline")
+        assert calls == ["deferred"], "timer expiry must defer, not cut power"
+
+        # Reset to monitoring and fire low-battery → immediate power off.
+        observer.save_orchestrator_state({
+            "mode": "monitoring_battery", "phase": "offline_wait",
+            "phase_deadline": 0, "onbatt_since": 1, "last_event": "ONBATT", "updated_at": 1,
+        })
+        observer._execute_phase_action(reason="low_battery")
+        assert calls == ["deferred", "immediate"], "low battery must power off immediately"
 
 
 def test_event_api_returns_shutdown_server_flag(monkeypatch):
