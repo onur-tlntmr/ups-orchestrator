@@ -32,6 +32,7 @@ ups_devices:
       desktop_suspend_wait: 360       # Desktop suspended → wait ~6.5 min before waking
       desktop_shutdown_wait: 60       # After issuing shutdown, wait 60 s for confirmation
       wake_online_timeout: 60         # After WoL, wait up to 60 s for desktop to come online
+      wol_retry_interval: 20          # Re-send WoL every 20 s while waiting (0 = send once)
 
     # Optional: send WoL via SSH on a relay host (e.g. Proxmox host) instead of locally.
     # Useful when the server runs inside a VM and the bridge blocks broadcast frames.
@@ -43,18 +44,19 @@ ups_devices:
     # from the observer UPS (desktop-ups) below.
 
   # The desktop's UPS — physically connected to this server via USB.
-  # Server never self-shuts because of this UPS, but coordinates the desktop
-  # and powers the UPS off cleanly when needed.
+  # Server never self-shuts because of this UPS; it only powers this UPS off
+  # cleanly (via upscmd) once the desktop is safely down. Desktop coordination
+  # itself (prompt/wake/shutdown) is driven by the primary above.
   - id: "desktop-ups"
     nut_name: "desktop-ups@localhost"
     role: "observer"
 
+    # An observer never coordinates the desktop (no prompt / WoL / suspend logic) —
+    # that's the primary's job (server-ups above), which inherits this desktop config.
+    # So only these two timing fields are read for an observer; the desktop
+    # prompt/suspend/wake/shutdown timings are ignored here and live on the primary.
     timing:
-      desktop_offline_wait: 300        # Desktop offline → wait then send upscmd shutdown
-      desktop_online_prompt_wait: 180
-      desktop_suspend_wait: 400
-      desktop_shutdown_wait: 60
-      wake_online_timeout: 60
+      desktop_offline_wait: 300        # This observer's grace period before it powers off its UPS
       # Once this observer's grace timer expires it does NOT cut power immediately:
       # it waits for the desktop to be confirmed down by the primary (which may
       # still be waking & shutting it down), so it never yanks power from a
