@@ -335,7 +335,15 @@ class UPSContext:
                 logger.info(f"[{self.device.id}] Power restored during shutdown wait — aborting")
                 return
             state = self.get_desktop_state()
-            if state.get("status") in ("shutting_down", "offline", "suspended"):
+            # NOTE: 'suspended' is deliberately NOT a confirmation here. Both callers
+            # reach this only after trying to bring a live/woken desktop down cleanly:
+            # the user-prompt path pushes shutdown to an online desktop, and the
+            # suspend path first wakes it via WoL. A still-'suspended' status means the
+            # desktop never came up to receive the shutdown — treating it as confirmed
+            # would collapse the desktop_shutdown_wait window to zero and self-shutdown
+            # while the desktop is still asleep on a dying UPS. Wait the full window so
+            # it has a real chance to wake and shut down (or time out, then proceed).
+            if state.get("status") in ("shutting_down", "offline"):
                 logger.info(f"[{self.device.id}] Desktop reported '{state.get('status')}', proceeding with terminal action")
                 self._event_log.record(EV_DESKTOP_CONFIRMED, {"status": state.get("status")})
                 break
@@ -585,28 +593,40 @@ class UPSContext:
         self._event_log.record(EV_SHUTDOWN_PUSHED)
         self._wait_for_desktop_then_terminal_action()
 
-    def _action_wake_then_shutdown(self):
+    def _send_wol(self) -> bool:
+        """Send a single Wake-on-LAN packet to the desktop. Returns False if there
+        is no MAC to target or the send raised."""
         mac = self.device.desktop.mac_address if self.device.desktop else None
-        if mac:
-            try:
-                relay = self.device.wol_relay
-                if relay:
-                    logger.info(f"[{self.device.id}] Sending WoL to {mac} via SSH relay {relay.host!r}")
-                    wol.send(mac, relay_ssh=relay.host, relay_identity_file=relay.identity_file or "")
-                else:
-                    desktop_ip = self.device.desktop.agent_url.split("//")[-1].split(":")[0]
-                    iface = wol.iface_for_ip(desktop_ip)
-                    logger.info(f"[{self.device.id}] Sending WoL to {mac} via {iface!r}")
-                    wol.send(mac, iface=iface)
-                self._event_log.record(EV_WOL_SENT, {"mac": mac})
-            except Exception as exc:
-                logger.error(f"[{self.device.id}] WoL failed: {exc}")
-                self._event_log.record(EV_WOL_FAILED, {"mac": mac, "error": str(exc)})
-        else:
+        if not mac:
             logger.warning(f"[{self.device.id}] No MAC configured, skipping WoL")
+            return False
+        try:
+            relay = self.device.wol_relay
+            if relay:
+                logger.info(f"[{self.device.id}] Sending WoL to {mac} via SSH relay {relay.host!r}")
+                wol.send(mac, relay_ssh=relay.host, relay_identity_file=relay.identity_file or "")
+            else:
+                desktop_ip = self.device.desktop.agent_url.split("//")[-1].split(":")[0]
+                iface = wol.iface_for_ip(desktop_ip)
+                logger.info(f"[{self.device.id}] Sending WoL to {mac} via {iface!r}")
+                wol.send(mac, iface=iface)
+            self._event_log.record(EV_WOL_SENT, {"mac": mac})
+            return True
+        except Exception as exc:
+            logger.error(f"[{self.device.id}] WoL failed: {exc}")
+            self._event_log.record(EV_WOL_FAILED, {"mac": mac, "error": str(exc)})
+            return False
 
-        # Wait for desktop to come online so it can shut down gracefully
+    def _action_wake_then_shutdown(self):
+        self._send_wol()
+
+        # Wait for the desktop to come online so it can shut down gracefully.
+        # A single magic packet can be dropped (or land before the NIC is ready),
+        # so re-send WoL every wol_retry_interval seconds until the desktop
+        # reports online or the wake window expires.
+        retry_interval = self.device.timing.wol_retry_interval
         deadline = now_ts() + self.device.timing.wake_online_timeout
+        next_retry = now_ts() + retry_interval
         desktop_came_online = False
         while now_ts() < deadline:
             if self.get_orchestrator_state().get("mode") != MODE_SHUTTING_DOWN:
@@ -617,6 +637,10 @@ class UPSContext:
                 logger.info(f"[{self.device.id}] Desktop is online after wake, pushing shutdown")
                 desktop_came_online = True
                 break
+            if retry_interval > 0 and now_ts() >= next_retry:
+                logger.info(f"[{self.device.id}] Desktop still not online, re-sending WoL")
+                self._send_wol()
+                next_retry = now_ts() + retry_interval
             time.sleep(5)
 
         if not desktop_came_online:

@@ -44,6 +44,9 @@ class TimingConfig:
     desktop_shutdown_wait: int = 60
     # After WoL, how long to wait for desktop to report online before pushing shutdown
     wake_online_timeout: int = 60
+    # While waiting for the woken desktop, re-send the WoL packet this often (seconds).
+    # Guards against a dropped magic packet. Set to 0 to send WoL only once.
+    wol_retry_interval: int = 20
     # Observer only: once its own grace timer expires, how long to keep holding the
     # UPS power-off while the primary still coordinates the desktop (wakes & shuts it
     # down). Pure battery-safety backstop — the real trigger is "desktop confirmed
@@ -96,6 +99,7 @@ def _parse_timing(d: dict) -> TimingConfig:
         desktop_suspend_wait=d.get("desktop_suspend_wait", TimingConfig.desktop_suspend_wait),
         desktop_shutdown_wait=d.get("desktop_shutdown_wait", TimingConfig.desktop_shutdown_wait),
         wake_online_timeout=d.get("wake_online_timeout", TimingConfig.wake_online_timeout),
+        wol_retry_interval=d.get("wol_retry_interval", TimingConfig.wol_retry_interval),
         observer_poweroff_max_wait=d.get("observer_poweroff_max_wait", TimingConfig.observer_poweroff_max_wait),
     )
 
