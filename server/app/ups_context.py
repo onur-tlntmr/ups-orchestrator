@@ -58,6 +58,9 @@ class UPSContext:
         self._orchestrator_state_file = self.state_dir / "orchestrator_state.json"
 
         self._action_lock = threading.Lock()
+        # Serialises "idle → monitoring" so this primary's own ONBATT and an
+        # observer's desktop-only trigger can't both start monitoring.
+        self._start_lock = threading.Lock()
         self._deadline_timer: Optional[threading.Timer] = None
         # Set by register_peers() once all contexts exist. Lets an observer find
         # the primary that coordinates the same desktop, so it doesn't cut the
@@ -96,6 +99,53 @@ class UPSContext:
         so the observer reads it from the owning primary's desktop state.
         """
         return peer.get_desktop_state().get("status") in ("offline", "shutting_down")
+
+    # -------------------------------------------------------------------------
+    # Desktop-only coordination (primary role)
+    #
+    # The desktop's UPS (observer) can go on battery while this server's UPS stays
+    # on mains. The desktop still has to be prompted / woken & shut down, so the
+    # observer asks the primary that owns the desktop to run its normal desktop
+    # phases in "desktop_only" mode: same flow, but the terminal action does not
+    # shut the server down, and the primary's own OL status doesn't cancel it.
+    # -------------------------------------------------------------------------
+
+    def start_desktop_coordination(self):
+        """Called by an observer whose UPS went on battery."""
+        if self.device.is_observer or not self.device.desktop:
+            return
+        logger.info(f"[{self.device.id}] Desktop UPS on battery — starting desktop-only coordination")
+        self._start_monitoring_if_idle(desktop_only=True)
+
+    def stop_desktop_coordination(self):
+        """Called by an observer whose UPS is back on mains."""
+        orch = self.get_orchestrator_state()
+        if orch.get("desktop_only") and orch.get("mode") != MODE_IDLE:
+            self._reset_to_idle("desktop_ups_power_restored")
+
+    def _promote_desktop_only(self, orch: dict):
+        """This UPS went on battery during desktop-only coordination: it's now a
+        real outage for the server too, so the terminal action must shut it down."""
+        logger.warning(f"[{self.device.id}] Server UPS on battery during desktop-only coordination — server will shut down too")
+        orch["desktop_only"] = False
+        orch["onbatt_since"] = now_ts()
+        self.save_orchestrator_state(orch)
+        self._outage_log.record_start(orch["onbatt_since"])
+
+    def _finish_desktop_only(self):
+        """Terminal action of desktop-only coordination: the desktop is handled and
+        the server's UPS is on mains, so go back to idle instead of fsd. The pending
+        critical_shutdown command is left alone so a late desktop can still run it."""
+        logger.info(f"[{self.device.id}] Desktop-only coordination finished — server UPS on mains, not shutting down")
+        if self._deadline_timer is not None:
+            self._deadline_timer.cancel()
+            self._deadline_timer = None
+        orch = self.get_orchestrator_state()
+        orch["mode"] = MODE_IDLE
+        orch["phase"] = None
+        orch["phase_deadline"] = None
+        orch["desktop_only"] = False
+        self.save_orchestrator_state(orch)
 
     # -------------------------------------------------------------------------
     # State helpers
@@ -270,6 +320,8 @@ class UPSContext:
         the server (primary role) or power off this UPS (observer role)."""
         if self.device.is_observer:
             self._power_off_ups()
+        elif self.get_orchestrator_state().get("desktop_only"):
+            self._finish_desktop_only()
         else:
             self._self_shutdown()
 
@@ -386,6 +438,9 @@ class UPSContext:
         orch = self.get_orchestrator_state()
         mode = orch.get("mode", MODE_IDLE)
 
+        if orch.get("desktop_only") and (on_battery or low_battery):
+            self._promote_desktop_only(orch)
+
         if low_battery:
             if mode != MODE_SHUTTING_DOWN:
                 logger.warning(f"[{self.device.id}] LOW BATTERY ('{ups_status}') — executing immediate action")
@@ -396,13 +451,15 @@ class UPSContext:
 
         if on_battery:
             if mode == MODE_IDLE:
-                self._start_battery_monitoring()
+                self._start_monitoring_if_idle()
             elif mode == MODE_MONITORING:
                 self._check_phase_deadline()
             return
 
         if on_line:
-            if mode != MODE_IDLE:
+            # In desktop-only mode this UPS was on mains all along — only the
+            # observer's power restore (stop_desktop_coordination) ends it.
+            if mode != MODE_IDLE and not orch.get("desktop_only"):
                 self._reset_to_idle("power_restored")
             return
 
@@ -418,6 +475,9 @@ class UPSContext:
         orch = self.get_orchestrator_state()
         mode = orch.get("mode", MODE_IDLE)
 
+        if orch.get("desktop_only") and event in ("LOWBATT", "ONBATT"):
+            self._promote_desktop_only(orch)
+
         if event == "LOWBATT":
             if mode != MODE_SHUTTING_DOWN:
                 if mode != MODE_MONITORING:
@@ -426,10 +486,10 @@ class UPSContext:
 
         elif event == "ONBATT":
             if mode == MODE_IDLE:
-                self._start_battery_monitoring()
+                self._start_monitoring_if_idle()
 
         elif event == "ONLINE":
-            if mode != MODE_IDLE:
+            if mode != MODE_IDLE and not orch.get("desktop_only"):
                 self._reset_to_idle("power_restored_event")
 
         elif event == "desktop_suspend_due":
@@ -471,14 +531,23 @@ class UPSContext:
     # Internal state transitions
     # -------------------------------------------------------------------------
 
-    def _start_battery_monitoring(self):
+    def _start_monitoring_if_idle(self, desktop_only: bool = False):
+        with self._start_lock:
+            if self.get_orchestrator_state().get("mode", MODE_IDLE) != MODE_IDLE:
+                return
+            self._start_battery_monitoring(desktop_only=desktop_only)
+
+    def _start_battery_monitoring(self, desktop_only: bool = False):
         timing = self.device.timing
         orch = self.get_orchestrator_state()
         onbatt_ts = now_ts()
         orch["mode"] = MODE_MONITORING
         orch["last_event"] = "ONBATT"
         orch["onbatt_since"] = onbatt_ts
-        self._outage_log.record_start(onbatt_ts)
+        orch["desktop_only"] = desktop_only
+        if not desktop_only:
+            # Desktop-only: this UPS is on mains, so it's not an outage for it.
+            self._outage_log.record_start(onbatt_ts)
 
         if self.device.is_observer:
             # Observer UPSes never coordinate with the desktop directly — that is
@@ -492,6 +561,10 @@ class UPSContext:
             remaining = orch["phase_deadline"] - now_ts()
             logger.info(f"[{self.device.id}] Observer: started battery monitoring — upscmd in {remaining}s if still on battery")
             self._arm_deadline_timer(remaining)
+            # The primary only starts desktop coordination on its *own* ONBATT. If
+            # just this (desktop) UPS lost mains, it has to be asked explicitly.
+            for owner in self._desktop_owner_peers():
+                owner.start_desktop_coordination()
             return
 
         state = self.get_desktop_state()
@@ -520,7 +593,10 @@ class UPSContext:
             orch["phase"] = PHASE_USER_PROMPT
             orch["phase_deadline"] = now_ts() + timing.desktop_online_prompt_wait
 
-        self._event_log.record(EV_PHASE_STARTED, {"phase": orch["phase"], "desktop_state": desktop_status})
+        detail = {"phase": orch["phase"], "desktop_state": desktop_status}
+        if desktop_only:
+            detail["trigger"] = "desktop_ups"
+        self._event_log.record(EV_PHASE_STARTED, detail)
         self.save_orchestrator_state(orch)
         remaining = orch["phase_deadline"] - now_ts()
         logger.info(f"[{self.device.id}] Started battery monitoring — phase={orch['phase']}, deadline in {remaining}s")
@@ -676,7 +752,12 @@ class UPSContext:
         orch["phase_deadline"] = None
         orch["last_event"] = "ONLINE"
         orch["onbatt_since"] = None
+        orch["desktop_only"] = False
         self.save_orchestrator_state(orch)
+
+        if self.device.is_observer:
+            for owner in self._desktop_owner_peers():
+                owner.stop_desktop_coordination()
 
         cmd = self.get_command()
         if cmd and cmd.get("status") == "pending":
@@ -695,6 +776,7 @@ class UPSContext:
         orch["phase_deadline"] = None
         orch["last_event"] = "ONLINE"
         orch["onbatt_since"] = None
+        orch["desktop_only"] = False
         self.save_orchestrator_state(orch)
 
         cmd = self.get_command()
