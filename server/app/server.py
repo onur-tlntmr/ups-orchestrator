@@ -50,8 +50,8 @@ def _poll_device(ctx: UPSContext):
     if ups_status:
         ctx.handle_ups_status_transition(ups_status)
     else:
-        # upsc unavailable — still drive any in-progress phase deadline forward
-        ctx.check_phase_deadline_if_monitoring()
+        # upsc unavailable — still drive phase deadlines and the desktop-only flow
+        ctx.handle_ups_status_unavailable()
 
 
 def poll_loop():

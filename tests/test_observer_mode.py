@@ -2,7 +2,7 @@
 
 Covers:
 - _power_off_ups builds the correct upscmd argv with auth
-- _terminal_action dispatches to upscmd for observer / fsd for primary
+- _terminal_action dispatches to upscmd for observer / fsd for primary on battery
 - LOWBATT on observer never calls _self_shutdown
 - /api/ups/<id>/event response sets shutdown_server=False for observer LOWBATT
 """
@@ -11,6 +11,8 @@ import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server" / "app"))
@@ -24,7 +26,14 @@ from config import (  # noqa: E402
     ROLE_OBSERVER,
     ROLE_PRIMARY,
 )
-from ups_context import UPSContext  # noqa: E402
+from ups_context import UPSContext, MODE_IDLE, MODE_MONITORING, MODE_SHUTTING_DOWN  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolated_logs_dir(monkeypatch, tmp_path):
+    """Keep event/outage logs out of the repo's ./logs."""
+    import ups_context
+    monkeypatch.setattr(ups_context, "LOGS_DIR", tmp_path / "logs")
 
 
 def _make_ctx(role: str, tmp: Path) -> UPSContext:
@@ -48,10 +57,24 @@ def _make_primary_and_observer(tmp: Path):
     return primary, observer
 
 
-_SHUTTING_DOWN = {
-    "mode": "shutting_down", "phase": "offline_wait",
+_MONITORING = {
+    "mode": MODE_MONITORING, "phase": "offline_wait",
     "phase_deadline": 0, "onbatt_since": 1, "last_event": "ONBATT", "updated_at": 1,
 }
+_SHUTTING_DOWN = {**_MONITORING, "mode": MODE_SHUTTING_DOWN}
+_IDLE = {
+    "mode": MODE_IDLE, "phase": None, "phase_deadline": None,
+    "onbatt_since": None, "last_event": "ONLINE", "updated_at": 1,
+}
+
+
+class InlineThread:
+    """Runs a worker thread's target synchronously on start()."""
+    def __init__(self, target=None, daemon=None, **kw):
+        self._target = target
+
+    def start(self):
+        self._target()
 
 
 def test_observer_power_off_invokes_upscmd_with_auth(monkeypatch):
@@ -102,6 +125,7 @@ def test_observer_power_off_omits_auth_when_unset(monkeypatch):
 def test_observer_terminal_action_uses_upscmd():
     with tempfile.TemporaryDirectory() as tmp:
         ctx = _make_ctx(ROLE_OBSERVER, Path(tmp))
+        ctx.save_orchestrator_state(dict(_SHUTTING_DOWN))
         with patch.object(ctx, "_power_off_ups") as upscmd, \
              patch.object(ctx, "_self_shutdown") as fsd:
             ctx._terminal_action()
@@ -109,14 +133,44 @@ def test_observer_terminal_action_uses_upscmd():
             fsd.assert_not_called()
 
 
-def test_primary_terminal_action_uses_fsd():
+def test_primary_terminal_action_uses_fsd_when_its_ups_is_on_battery():
     with tempfile.TemporaryDirectory() as tmp:
         ctx = _make_ctx(ROLE_PRIMARY, Path(tmp))
+        ctx.save_orchestrator_state(dict(_SHUTTING_DOWN))
+        ctx._ups_on_battery = True
         with patch.object(ctx, "_power_off_ups") as upscmd, \
              patch.object(ctx, "_self_shutdown") as fsd:
             ctx._terminal_action()
             fsd.assert_called_once()
             upscmd.assert_not_called()
+
+
+def test_primary_terminal_action_never_fsd_while_its_ups_is_on_mains():
+    """Desktop handled while the server's own UPS is on mains → no fsd; the primary
+    just records that the desktop has been dealt with."""
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = _make_ctx(ROLE_PRIMARY, Path(tmp))
+        ctx.save_orchestrator_state(dict(_SHUTTING_DOWN))
+        ctx._ups_on_battery = False
+        with patch.object(ctx, "_self_shutdown") as fsd:
+            ctx._terminal_action()
+            fsd.assert_not_called()
+        assert ctx.finished_desktop_handling()
+
+
+def test_terminal_action_aborts_once_power_restored():
+    """Power restored between 'desktop confirmed down' and the terminal action
+    (mode already reset to idle) must not shut the server down or cut UPS power."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for role in (ROLE_PRIMARY, ROLE_OBSERVER):
+            ctx = _make_ctx(role, Path(tmp))
+            ctx.save_orchestrator_state(dict(_IDLE))
+            ctx._ups_on_battery = True
+            with patch.object(ctx, "_power_off_ups") as upscmd, \
+                 patch.object(ctx, "_self_shutdown") as fsd:
+                ctx._terminal_action()
+                fsd.assert_not_called()
+                upscmd.assert_not_called()
 
 
 def test_observer_lowbatt_event_never_calls_self_shutdown(monkeypatch):
@@ -131,19 +185,8 @@ def test_observer_lowbatt_event_never_calls_self_shutdown(monkeypatch):
         monkeypatch.setattr(ctx, "_arm_deadline_timer", lambda delay: None)
 
         import ups_context as ups_ctx_mod
-
-        class InlineThread:
-            def __init__(self, target=None, daemon=None, **kw):
-                self._target = target
-            def start(self):
-                self._target()
-
-        original_thread = ups_ctx_mod.threading.Thread
         monkeypatch.setattr(ups_ctx_mod.threading, "Thread", InlineThread)
-        try:
-            ctx.handle_event("LOWBATT")
-        finally:
-            monkeypatch.setattr(ups_ctx_mod.threading, "Thread", original_thread)
+        ctx.handle_event("LOWBATT")
 
         assert called["self"] == 0, "observer must not call _self_shutdown"
         assert called["upscmd"] == 1, "observer must call _power_off_ups exactly once"
@@ -171,14 +214,7 @@ def test_observer_ignores_desktop_state_change(monkeypatch):
         ctx = _make_ctx(ROLE_OBSERVER, Path(tmp))
 
         # Put context in monitoring mode as if ONBATT was received
-        ctx.save_orchestrator_state({
-            "mode": "monitoring_battery",
-            "phase": "offline_wait",
-            "phase_deadline": 9999999999,
-            "onbatt_since": 1,
-            "last_event": "ONBATT",
-            "updated_at": 1,
-        })
+        ctx.save_orchestrator_state({**_MONITORING, "phase_deadline": 9999999999})
 
         terminal_called = []
         monkeypatch.setattr(ctx, "_terminal_action", lambda: terminal_called.append(True))
@@ -213,10 +249,7 @@ def test_observer_holds_power_off_while_desktop_up_then_aborts_on_restore(monkey
         # Desktop still online — must never be a reason to power off.
         primary.save_desktop_state({"status": "online"})
         # Power restored: orchestrator no longer in shutting_down.
-        observer.save_orchestrator_state({
-            "mode": "idle", "phase": None, "phase_deadline": None,
-            "onbatt_since": None, "last_event": "ONLINE", "updated_at": 1,
-        })
+        observer.save_orchestrator_state(dict(_IDLE))
 
         powered_off = []
         monkeypatch.setattr(observer, "_power_off_ups", lambda: powered_off.append(True))
@@ -263,18 +296,9 @@ def test_observer_phase_deadline_defers_lowbatt_powers_off_now(monkeypatch):
     low battery → immediate terminal action."""
     with tempfile.TemporaryDirectory() as tmp:
         primary, observer = _make_primary_and_observer(Path(tmp))
-        observer.save_orchestrator_state({
-            "mode": "monitoring_battery", "phase": "offline_wait",
-            "phase_deadline": 0, "onbatt_since": 1, "last_event": "ONBATT", "updated_at": 1,
-        })
+        observer.save_orchestrator_state(dict(_MONITORING))
 
         import ups_context as ups_ctx_mod
-
-        class InlineThread:
-            def __init__(self, target=None, daemon=None, **kw):
-                self._target = target
-            def start(self):
-                self._target()
 
         calls = []
         monkeypatch.setattr(observer, "_observer_power_off_when_desktop_safe",
@@ -286,10 +310,7 @@ def test_observer_phase_deadline_defers_lowbatt_powers_off_now(monkeypatch):
         assert calls == ["deferred"], "timer expiry must defer, not cut power"
 
         # Reset to monitoring and fire low-battery → immediate power off.
-        observer.save_orchestrator_state({
-            "mode": "monitoring_battery", "phase": "offline_wait",
-            "phase_deadline": 0, "onbatt_since": 1, "last_event": "ONBATT", "updated_at": 1,
-        })
+        observer.save_orchestrator_state(dict(_MONITORING))
         observer._execute_phase_action(reason="low_battery")
         assert calls == ["deferred", "immediate"], "low battery must power off immediately"
 
@@ -306,11 +327,13 @@ def test_event_api_returns_shutdown_server_flag(monkeypatch):
         sys.modules.pop(mod, None)
     import server  # noqa: E402
 
-    # Block any threads that would try real shutdown
+    # Block any threads that would try real shutdown, WoL or desktop pushes
     for ctx in server.CONTEXTS.values():
         ctx._self_shutdown = lambda: None
         ctx._power_off_ups = lambda: True
         ctx.fetch_state_from_desktop = lambda: {}
+        ctx._send_wol = lambda: True
+        ctx.push_command_to_desktop = lambda cmd: True
 
     client = server.APP.test_client()
     headers = {"X-UPS-Token": server.SHARED_TOKEN, "Content-Type": "application/json"}
