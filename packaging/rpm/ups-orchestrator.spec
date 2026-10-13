@@ -6,7 +6,7 @@
 %bcond desktop 1
 
 Name:           ups-orchestrator
-Version:        0.1.0
+Version:        0.5.0
 Release:        1%{?dist}
 Summary:        Coordinates server and desktop shutdowns during UPS power events
 License:        MIT
@@ -148,5 +148,8 @@ install -Dpm644 desktop/.env.example %{buildroot}%{_sysconfdir}/%{name}/desktop.
 %endif
 
 %changelog
+* Tue Oct 13 2026 Onur T. <onur@tatimur.com> - 0.5.0-1
+- TODO: describe this release.
+
 * Tue Oct 13 2026 Onur T. <onur@tatimur.com> - 0.1.0-1
 - First packaged release: separate server (EL10) and desktop (Fedora) packages
