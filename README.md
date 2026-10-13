@@ -519,8 +519,11 @@ sudo ss -tulpn | grep -E "8787|8788"
 ---
 
 ## Automated Testing
+The system `python3` usually has no pytest, so run the tests from a venv:
 ```bash
-pytest tests/
+python3 -m venv .venv-test
+.venv-test/bin/python -m pip install -r requirements-test.txt
+.venv-test/bin/python -m pytest -q tests/
 ```
 
 CI (`.gitea/workflows/ci.yml`) runs the tests on every push; a `v*` tag matching `Version:` in
