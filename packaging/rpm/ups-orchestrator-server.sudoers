@@ -1,0 +1,3 @@
+# Installed by ups-orchestrator-server: lets the server shut its host down through NUT
+# (`sudo -n upsmon -c fsd`) when its primary UPS reaches low battery.
+ups-orchestrator ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd

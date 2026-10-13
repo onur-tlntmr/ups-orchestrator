@@ -1,14 +1,23 @@
 [Unit]
 Description=UPS Orchestrator Server
-After=network.target
+After=network-online.target nut-server.service
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=<username>
-WorkingDirectory=/opt/ups-orchestrator/server
-EnvironmentFile=/opt/ups-orchestrator/server/.env
-ExecStart=/opt/ups-orchestrator/server/.venv/bin/python app/server.py
+User=ups-orchestrator
+Group=ups-orchestrator
+StateDirectory=ups-orchestrator
+LogsDirectory=ups-orchestrator
+WorkingDirectory=/var/lib/ups-orchestrator
+# Defaults; /etc/ups-orchestrator/server.env overrides any of them.
+Environment=UPS_STATE_DIR=/var/lib/ups-orchestrator
+Environment=UPS_LOGS_DIR=/var/log/ups-orchestrator
+Environment=UPS_CONFIG_FILE=/etc/ups-orchestrator/ups_config.yml
+EnvironmentFile=/etc/ups-orchestrator/server.env
+ExecStart=/usr/bin/python3 /usr/share/ups-orchestrator/server/app/server.py
 Restart=always
+# Raw-socket Wake-on-LAN
 AmbientCapabilities=CAP_NET_RAW
 
 [Install]

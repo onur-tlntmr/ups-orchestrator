@@ -12,3 +12,7 @@ __pycache__/
 *.pyd
 
 logs/**
+
+# CI
+packaging/ci/runner.env
+dist/

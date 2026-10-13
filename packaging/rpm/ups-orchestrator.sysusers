@@ -1,0 +1,3 @@
+u ups-orchestrator - "UPS Orchestrator server" /var/lib/ups-orchestrator -
+# upssched-cmd runs as NUT's user and reads the token from server.env (root:ups-orchestrator 0640).
+m nut ups-orchestrator

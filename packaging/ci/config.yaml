@@ -1,0 +1,27 @@
+# act_runner configuration, mounted read-only into the runner container.
+log:
+  level: info
+
+runner:
+  file: /data/.runner
+  # Two, so a release's server and desktop builds run side by side.
+  capacity: 2
+  timeout: 1h
+  # A job's runs-on picks the distro it is built on; the image is pulled on first use.
+  labels:
+    - "rocky-10:docker://docker.io/rockylinux/rockylinux:10"
+    - "fedora-44:docker://docker.io/library/fedora:44"
+
+# Nothing in the workflows uses actions/cache.
+cache:
+  enabled: false
+
+container:
+  # Empty: act_runner creates a network per job.
+  network: ""
+  privileged: false
+  # "-": find the Podman socket for the runner itself, but do not mount it into job
+  # containers — jobs only run dnf, rpmbuild and curl.
+  docker_host: "-"
+  force_pull: false
+  valid_volumes: []

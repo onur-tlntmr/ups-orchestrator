@@ -1,9 +1,12 @@
 import os
 from pathlib import Path
 
-# Load .env if present
+# Load .env if present: desktop/.env in a source checkout, else the RPM's /etc file.
+# Variables already in the environment (e.g. from systemd's EnvironmentFile) win.
 env_file = Path(__file__).resolve().parent.parent / ".env"
-if env_file.exists():
+if not env_file.exists():
+    env_file = Path("/etc/ups-orchestrator/desktop.env")
+if env_file.is_file() and os.access(env_file, os.R_OK):
     for line in env_file.read_text().splitlines():
         line = line.strip()
         if "=" in line and not line.startswith("#"):

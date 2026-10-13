@@ -137,7 +137,7 @@ commands (e.g. `shutdown.return` on the desktop's UPS).
 ```
 
 > Match these credentials with the corresponding env vars:
-> `UPS_UPSCMD_USER` / `UPS_UPSCMD_PASS` in `server/.env`.
+> `UPS_UPSCMD_USER` / `UPS_UPSCMD_PASS` in `/etc/ups-orchestrator/server.env`.
 
 ### 3. Monitoring & Scheduler Configuration
 
@@ -168,10 +168,11 @@ POWERDOWNFLAG /etc/killpower
 ```
 
 #### `upssched.conf`
-The scheduler that executes our scripts. You can use the provided template in the project:
+The scheduler that executes our scripts. The server package ships a template;
+copy it and adjust the UPS ids to match `ups_config.yml`:
 ```bash
-# Link the project's config to /etc/nut/upssched.conf
-sudo ln -sf /opt/ups-orchestrator/server/scripts/upssched.conf /etc/nut/upssched.conf
+sudo cp /usr/share/ups-orchestrator/server/upssched.conf /etc/nut/upssched.conf
+sudo $EDITOR /etc/nut/upssched.conf
 ```
 
 ### 4. Apply Changes
@@ -224,59 +225,61 @@ your-user ALL=(root) NOPASSWD: /sbin/shutdown
 
 ## Integration with UPS Orchestrator
 
-The server uses `server/scripts/upssched-cmd` to process events from NUT. Ensure the paths in `/etc/nut/upssched.conf` are correct and the script has execution permissions.
-
-```bash
-chmod +x /opt/ups-orchestrator/server/scripts/upssched-cmd
-```
+The server uses `upssched-cmd` (installed as `/usr/libexec/ups-orchestrator/upssched-cmd`)
+to process events from NUT; `CMDSCRIPT` in the template already points there. It runs as
+NUT's user and reads the port and token from `/etc/ups-orchestrator/server.env`, which the
+package makes readable to NUT's user by adding it to the `ups-orchestrator` group. Restart
+NUT once after installing (`sudo systemctl restart nut-monitor`) so the running `upsmon`
+picks up the new group.
 
 ---
 
-## Installation & Configuration
+## Installation (RPM)
 
-### 1. Server Setup
-```bash
-# Create and activate virtual environment
-python -m venv server/.venv
-source server/.venv/bin/activate
+Both components are published as RPMs to the Gitea package registry by CI (see
+[packaging/ci/README.md](packaging/ci/README.md)):
 
-# Install dependencies
-pip install -r server/requirements.txt
+| Package | Installed on | Repository group |
+|---|---|---|
+| `ups-orchestrator-server` | the NUT host (Rocky Linux 10, needs EPEL) | `el/10` |
+| `ups-orchestrator-desktop` | the desktop (Fedora 44) | `fedora/44` |
 
-# Configuration
-cp server/.env.example server/.env
-# Edit server/.env with your settings (Token, URLs)
-nano server/.env
+Add the repository once (replace `<instance>`, `<owner>` and the group):
 
-# Run
-python server/app/server.py
+```ini
+# /etc/yum.repos.d/ups-orchestrator.repo
+[ups-orchestrator]
+name=UPS Orchestrator
+baseurl=https://<instance>/api/packages/<owner>/rpm/el/10
+enabled=1
+gpgcheck=1
+gpgkey=https://<instance>/api/packages/<owner>/rpm/repository.key
 ```
 
-### 2. Desktop Agent Setup
+Then `sudo dnf install ups-orchestrator-server` (or `-desktop`); later releases arrive with
+`sudo dnf upgrade`.
 
-Runs on your desktop to execute commands and report system state.
-The power agent (`power_agent.py`) uses DBus via `pydbus` / GObject
-Introspection, which requires system packages **before** creating the venv.
+Layout:
+
+| What | Where |
+|---|---|
+| Code | `/usr/share/ups-orchestrator/{server,desktop}/app/` |
+| Configuration | `/etc/ups-orchestrator/server.env`, `ups_config.yml`, `desktop.env` (kept on upgrade) |
+| Server state / logs | `/var/lib/ups-orchestrator`, `/var/log/ups-orchestrator` |
+| NUT hook | `/usr/libexec/ups-orchestrator/upssched-cmd` |
+
+### Running from a checkout (development)
 
 ```bash
-# Install system dependencies for DBus/GObject (required by power_agent.py)
-sudo dnf install python3-gobject    # Fedora/RHEL
-sudo apt install python3-gi         # Debian/Ubuntu
+python -m venv server/.venv && server/.venv/bin/pip install -r server/requirements.txt
+cp server/.env.example server/.env
+(set -a; . server/.env; set +a; server/.venv/bin/python server/app/server.py)
 
-# Create venv with access to system site-packages (needed for gi/pydbus)
+# The desktop needs python3-gobject from the system for gi/pydbus
 python -m venv --system-site-packages desktop/.venv
-source desktop/.venv/bin/activate
-
-# Install dependencies
-pip install -r desktop/requirements.txt
-
-# Configuration
+desktop/.venv/bin/pip install -r desktop/requirements.txt
 cp desktop/.env.example desktop/.env
-# Edit desktop/.env with your settings
-nano desktop/.env
-
-# Run
-python desktop/app/agent.py
+desktop/.venv/bin/python desktop/app/agent.py
 ```
 
 ---
@@ -313,37 +316,39 @@ curl -H "X-UPS-Token: secret-token" http://localhost:8787/api/ups/
 
 ## Deployment (systemd)
 
-You can run both the server and the agent as systemd services to ensure they start automatically. The project should be installed in `/opt/ups-orchestrator`.
+The packages install the units; they start nothing until enabled.
 
-### 1. Server Service
-1. Copy the service file from `server/systemd/ups-orchestrator-server.service` to `/etc/systemd/system/`.
-2. Edit the file to set your `User` and verify paths.
-3. Allow the service user to run `upsmon -c fsd` without a password:
+### 1. Server
+1. Edit `/etc/ups-orchestrator/server.env` (token, upscmd credentials) and
+   `/etc/ups-orchestrator/ups_config.yml` (UPS ids, desktop agent URL, MAC address).
+2. Run:
    ```bash
-   sudo visudo -f /etc/sudoers.d/ups-orchestrator-server
-   ```
-   ```
-   # Adjust the user to match User= in the service file
-   # Two rules needed: without -P (no pid) and with -P <pid> (NUT 2.8+)
-   your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd
-   your-user ALL=(root) NOPASSWD: /usr/sbin/upsmon -c fsd -P *
-   ```
-   > Use `which upsmon` to confirm the path and set `UPS_UPSMON_BIN` in `.env` accordingly.
-4. Run:
-   ```bash
-   sudo systemctl daemon-reload
    sudo systemctl enable --now ups-orchestrator-server
    ```
 
-### 2. Desktop Agent Service
-1. Copy the service file from `desktop/systemd/ups-orchestrator-agent.service` to `~/.config/systemd/user/`.
-2. Edit the file to verify paths.
-3. Run:
+The service runs as the `ups-orchestrator` system user with `CAP_NET_RAW` for Wake-on-LAN.
+The package installs `/etc/sudoers.d/ups-orchestrator-server`, which lets that user run
+`upsmon -c fsd` for the self-shutdown. A `wol_relay` uses that user's SSH key, under
+`/var/lib/ups-orchestrator/.ssh/`.
+
+### 2. Desktop
+1. Edit `/etc/ups-orchestrator/desktop.env` (token, server URL).
+2. Run:
    ```bash
-   systemctl --user daemon-reload
+   # Power agent: reports suspend/shutdown to the server (system service)
+   sudo systemctl enable --now ups-power-agent
+   # Agent: receives commands and prompts the user (user service, per login)
    systemctl --user enable --now ups-orchestrator-agent
    ```
    *Note: Running as a user service ensures the agent has access to your DBUS session for notifications and UI dialogs.*
+
+### Moving from an `/opt/ups-orchestrator` install
+Stop and disable the old units, delete the copies under `/etc/systemd/system/` and
+`~/.config/systemd/user/`, move the old `.env` / `ups_config.yml` contents into
+`/etc/ups-orchestrator/`, point `/etc/nut/upssched.conf` at the packaged template, and remove
+the old `/etc/sudoers.d/ups-orchestrator-server`. The old state under
+`/opt/ups-orchestrator/server/.runtime-state` and `logs/` can be copied to
+`/var/lib/ups-orchestrator` and `/var/log/ups-orchestrator` to keep the outage history.
 
 ---
 
@@ -473,14 +478,7 @@ sudo semanage port -a -t http_port_t -p tcp 8787
 sudo semanage port -a -t http_port_t -p tcp 8788
 ```
 
-### 2. Allow Execution from /opt
-If the project is located in `/opt/ups-orchestrator`, SELinux might block the service execution.
-```bash
-# Set the correct context for the project directory
-sudo chcon -R -t bin_t /opt/ups-orchestrator/
-```
-
-### 3. Troubleshooting
+### 2. Troubleshooting
 Check the audit logs if the service fails to start or communicate:
 ```bash
 sudo ausearch -m AVC -ts recent
@@ -524,6 +522,9 @@ sudo ss -tulpn | grep -E "8787|8788"
 ```bash
 pytest tests/
 ```
+
+CI (`.gitea/workflows/ci.yml`) runs the tests on every push; a `v*` tag matching `Version:` in
+`packaging/rpm/ups-orchestrator.spec` also builds and publishes both RPMs.
 
 ---
 

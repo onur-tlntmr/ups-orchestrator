@@ -9,9 +9,25 @@
 
 set -u
 
+# The server's env file: UPS_ENV_FILE if set, else the RPM's /etc location,
+# else server/.env next to a source checkout.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/../.env"
+ENV_FILE="${UPS_ENV_FILE:-}"
+if [ -z "$ENV_FILE" ]; then
+    if [ -f /etc/ups-orchestrator/server.env ]; then
+        ENV_FILE=/etc/ups-orchestrator/server.env
+    else
+        ENV_FILE="$SCRIPT_DIR/../.env"
+    fi
+fi
 if [ -f "$ENV_FILE" ]; then
+    # Without the token every POST is rejected; say why instead of sending the default.
+    # (NUT's user gets read access through the ups-orchestrator group — restart NUT after
+    # installing the package so the running upsmon picks the group up.)
+    if [ ! -r "$ENV_FILE" ]; then
+        echo "upssched-cmd: cannot read $ENV_FILE as $(id -un)" >&2
+        exit 1
+    fi
     set -a
     # shellcheck disable=SC1090
     source "$ENV_FILE"
