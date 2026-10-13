@@ -148,5 +148,5 @@ install -Dpm644 desktop/.env.example %{buildroot}%{_sysconfdir}/%{name}/desktop.
 %endif
 
 %changelog
-* Tue Oct 13 2026 Onur T. <developers@snapbytes.com> - 0.1.0-1
+* Tue Oct 13 2026 Onur T. <onur@tatimur.com> - 0.1.0-1
 - First packaged release: separate server (EL10) and desktop (Fedora) packages

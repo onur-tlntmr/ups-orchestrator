@@ -72,12 +72,24 @@ Actions must be enabled for the repository (**Settings → Actions**).
 
 ## Release
 
-1. Bump `Version:` (and add a `%changelog` entry) in
-   [`packaging/rpm/ups-orchestrator.spec`](../rpm/ups-orchestrator.spec). Server and desktop
-   share the version.
-2. Commit, then `git tag -a vX.Y.Z -m vX.Y.Z && git push --follow-tags`.
+The version lives only in `Version:` of
+[`packaging/rpm/ups-orchestrator.spec`](../rpm/ups-orchestrator.spec); server and desktop share
+it. [`tools/set-version.sh`](../../tools/set-version.sh) writes it, resets `Release:` to 1, adds
+a dated `%changelog` entry and prints the rest of the sequence:
 
-The tag must equal `v` + `Version:`, or the package job fails. Only a tag publishes; a manual
+```bash
+tools/set-version.sh 0.2.0
+$EDITOR packaging/rpm/ups-orchestrator.spec    # fill in the "TODO: describe this release." line
+python3 -m pytest -q tests/
+git commit -am "chore: bump version to 0.2.0"
+git push
+git tag -a v0.2.0 -m "ups-orchestrator 0.2.0"
+git push origin v0.2.0                          # ← builds and publishes both RPMs
+```
+
+`tools/set-version.sh --show` prints the current version. Only plain `X.Y.Z` is accepted, and a
+version whose tag already exists is refused. The tag comes **last**: it must equal `v` +
+`Version:`, or the package job fails. Only a tag publishes; a manual
 run (Actions → ci → Run workflow) builds both RPMs as workflow artifacts only.
 
 ### Publishing token

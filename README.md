@@ -524,7 +524,9 @@ pytest tests/
 ```
 
 CI (`.gitea/workflows/ci.yml`) runs the tests on every push; a `v*` tag matching `Version:` in
-`packaging/rpm/ups-orchestrator.spec` also builds and publishes both RPMs.
+`packaging/rpm/ups-orchestrator.spec` also builds and publishes both RPMs. `tools/set-version.sh`
+sets that version and prints the commit and tag commands (see
+[packaging/ci/README.md](packaging/ci/README.md#release)).
 
 ---
 
