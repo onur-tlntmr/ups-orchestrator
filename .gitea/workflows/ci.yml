@@ -1,7 +1,7 @@
 # Tests every push; on a v* tag also builds the two RPMs, each on the distro it is installed on,
-# and publishes them to the instance's RPM registry. Runs on the rootless Podman runner from
-# packaging/ci/ (labels rocky-10 and fedora-44 are stock distro images, so each job installs
-# what it needs first).
+# and publishes them to the instance's RPM registry. Runs on ups-ci-runner on ci-01 (packaging/ci/;
+# labels rocky-10 and fedora-44 are stock distro images, so each job installs what it needs
+# first), and waits for tella's builds on the same VM through a shared build lock.
 name: ci
 
 on:
@@ -15,6 +15,42 @@ jobs:
     # The server's distro, so the tests run against the Python it is installed with.
     runs-on: rocky-10
     steps:
+      # First, before dnf: tella builds on the same VM and must not share it with us.
+      - name: Wait for the build lock
+        env:
+          LOCK_MODE: shared
+          LOCK_WAIT: "2700"   # 45m; tella holds it for at most its 25m job timeout
+          LOCK_HOLD: "3600"   # this runner's 1h job timeout
+        run: |
+          # The VM-wide build lock (/run/ci-locks on the runner host): tella holds it exclusively,
+          # ups-orchestrator jobs share it, so the two never build at the same time. A background
+          # flock keeps it for the rest of the job — at most LOCK_HOLD seconds (the runner timeout), so
+          # a job container left behind by a runner restart cannot keep it forever. Removing the job
+          # container releases it.
+          if ! mountpoint -q /locks; then
+            echo "/locks is not mounted: add '-v /run/ci-locks:/locks' (':z' unless privileged) to" >&2
+            echo "container.options and '/run/ci-locks' to valid_volumes in the runner's config.yaml" >&2
+            exit 1
+          fi
+          rm -f /tmp/build-lock-held /tmp/build-lock.err
+          setsid flock "--$LOCK_MODE" --wait "$LOCK_WAIT" /locks/build.lock \
+            sh -c 'touch /tmp/build-lock-held; exec sleep "$LOCK_HOLD"' \
+            </dev/null >/dev/null 2>/tmp/build-lock.err &
+          holder=$!
+          echo "waiting for the $LOCK_MODE build lock (up to ${LOCK_WAIT}s)"
+          until [ -e /tmp/build-lock-held ]; do
+            if ! kill -0 "$holder" 2>/dev/null; then
+              if [ -s /tmp/build-lock.err ]; then
+                echo "flock failed: $(cat /tmp/build-lock.err)" >&2
+              else
+                echo "no $LOCK_MODE build lock within ${LOCK_WAIT}s; the other project is still building" >&2
+              fi
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "build lock held ($LOCK_MODE)"
+
       # git before checkout, or actions/checkout falls back to a tarball without .git;
       # nodejs because checkout is a JavaScript action.
       - name: Install tools
@@ -42,6 +78,42 @@ jobs:
             runner: fedora-44
     runs-on: ${{ matrix.runner }}
     steps:
+      # First, before dnf: tella builds on the same VM and must not share it with us.
+      - name: Wait for the build lock
+        env:
+          LOCK_MODE: shared
+          LOCK_WAIT: "2700"   # 45m; tella holds it for at most its 25m job timeout
+          LOCK_HOLD: "3600"   # this runner's 1h job timeout
+        run: |
+          # The VM-wide build lock (/run/ci-locks on the runner host): tella holds it exclusively,
+          # ups-orchestrator jobs share it, so the two never build at the same time. A background
+          # flock keeps it for the rest of the job — at most LOCK_HOLD seconds (the runner timeout), so
+          # a job container left behind by a runner restart cannot keep it forever. Removing the job
+          # container releases it.
+          if ! mountpoint -q /locks; then
+            echo "/locks is not mounted: add '-v /run/ci-locks:/locks' (':z' unless privileged) to" >&2
+            echo "container.options and '/run/ci-locks' to valid_volumes in the runner's config.yaml" >&2
+            exit 1
+          fi
+          rm -f /tmp/build-lock-held /tmp/build-lock.err
+          setsid flock "--$LOCK_MODE" --wait "$LOCK_WAIT" /locks/build.lock \
+            sh -c 'touch /tmp/build-lock-held; exec sleep "$LOCK_HOLD"' \
+            </dev/null >/dev/null 2>/tmp/build-lock.err &
+          holder=$!
+          echo "waiting for the $LOCK_MODE build lock (up to ${LOCK_WAIT}s)"
+          until [ -e /tmp/build-lock-held ]; do
+            if ! kill -0 "$holder" 2>/dev/null; then
+              if [ -s /tmp/build-lock.err ]; then
+                echo "flock failed: $(cat /tmp/build-lock.err)" >&2
+              else
+                echo "no $LOCK_MODE build lock within ${LOCK_WAIT}s; the other project is still building" >&2
+              fi
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "build lock held ($LOCK_MODE)"
+
       - name: Install tools
         run: dnf -y -q install git nodejs rpm-build python3-devel systemd-rpm-macros jq
 

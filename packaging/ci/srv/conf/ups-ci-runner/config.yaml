@@ -1,0 +1,40 @@
+# act_runner configuration: /root/srv/conf/ups-ci-runner/config.yaml on ci-01, mounted
+# read-only into the runner container.
+log:
+  level: info
+
+runner:
+  file: /data/.runner
+  # Two, so a release's server and desktop builds run side by side.
+  capacity: 2
+  # Covers waiting up to 45m for the build lock while tella builds, plus the job itself.
+  timeout: 1h
+  # A job's runs-on picks the distro it is built on; the image is pulled on first use.
+  labels:
+    - "rocky-10:docker://docker.io/rockylinux/rockylinux:10"
+    - "fedora-44:docker://docker.io/library/fedora:44"
+
+# Nothing in the workflows uses actions/cache.
+cache:
+  enabled: false
+
+container:
+  # Empty: act_runner creates a network per job.
+  network: ""
+  privileged: false
+  # "-": find the Podman socket for the runner itself, but do not mount it into job
+  # containers — jobs only run dnf, rpmbuild and curl.
+  docker_host: "-"
+  force_pull: false
+  # Per job container: 4 CPUs, 3g RAM with no swap on top (a job peaks around 1.1 GiB).
+  # /locks is the VM-wide build lock shared with tella-runner (packaging/ci/tmpfiles.d/);
+  # :z relabels it so a non-privileged job container may open it.
+  options: >-
+    --cpus=4
+    --memory=3g
+    --memory-swap=3g
+    -v /run/ci-locks:/locks:z
+  # act_runner silently drops a mount that is not listed here; the workflows' lock step
+  # fails the job if /locks is missing.
+  valid_volumes:
+    - "/run/ci-locks"

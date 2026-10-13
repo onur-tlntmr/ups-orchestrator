@@ -14,5 +14,5 @@ __pycache__/
 logs/**
 
 # CI
-packaging/ci/runner.env
+packaging/ci/srv/env/ups-ci-runner.env
 dist/

@@ -1,0 +1,31 @@
+# Gitea act_runner for ups-orchestrator, as a rootful Podman Quadlet next to tella-runner on
+# ci-01. Lives in /root/srv/containers/ and is installed as
+# /etc/containers/systemd/ups-ci-runner.container (see packaging/ci/README.md).
+#
+# The runner drives the host's Podman socket as if it were Docker and starts each job as a
+# sibling container (rockylinux:10 / fedora:44, see config.yaml).
+[Unit]
+Description=Gitea Actions runner (ups-orchestrator)
+Wants=network-online.target
+After=network-online.target
+Requires=podman.socket
+After=podman.socket
+
+[Container]
+Image=docker.io/gitea/act_runner:0.2.13
+ContainerName=ups-ci-runner
+EnvironmentFile=/root/srv/env/ups-ci-runner.env
+Environment=CONFIG_FILE=/config/config.yaml
+Volume=/root/srv/conf/ups-ci-runner/config.yaml:/config/config.yaml:ro
+# Registration (.runner) lives here, so the token is only used on the first start.
+Volume=ups-ci-runner-data:/data
+Volume=/run/podman/podman.sock:/var/run/docker.sock
+# The host socket carries the host's SELinux label; without this the runner cannot connect.
+SecurityLabelDisable=true
+
+[Service]
+Restart=always
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target

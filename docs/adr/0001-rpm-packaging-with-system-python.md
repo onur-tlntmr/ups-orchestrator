@@ -5,7 +5,7 @@ The server and the desktop agent used to be installed by copying the repository 
 `ups-orchestrator-server`, built and published only for EL10 (the NUT host), and
 `ups-orchestrator-desktop`, built and published only for Fedora 44. Both depend on distro
 `python3-*` packages instead of bundling a venv. Files go to `/usr/share`, `/etc`,
-`/var/lib` and `/var/log` instead of `/opt`. Gitea Actions builds them on a rootless Podman
+`/var/lib` and `/var/log` instead of `/opt`. Gitea Actions builds them on a Podman
 runner and publishes them to Gitea's RPM registry, so both machines update with `dnf upgrade`.
 
 ## Considered options

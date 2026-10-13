@@ -1,49 +1,67 @@
-# ups-orchestrator CI — Gitea Actions on rootless Podman
+# ups-orchestrator CI — Gitea Actions on ci-01
 
 [`.gitea/workflows/ci.yml`](../../.gitea/workflows/ci.yml) tests every push and, on a `v*` tag,
 builds each RPM on the distro it is installed on and publishes it to the instance's RPM registry.
 
 ```text
-runner VM (Rocky Linux 10, rootless Podman, lingering user)
-├── podman.socket                  user's Podman API, used by the runner as "Docker"
-├── ups-ci-runner.service          quadlet: gitea/act_runner, ups-ci-runner-data volume
-└── job containers (siblings)
-    ├── rocky-10   → rockylinux:10   test job, server RPM  → registry group el/10
-    └── fedora-44  → fedora:44       desktop RPM           → registry group fedora/44
+ci-01 (Rocky Linux 10, rootful Podman, files under /root/srv)
+├── podman.socket                  /run/podman/podman.sock, used by both runners as "Docker"
+├── /run/ci-locks/build.lock       the build lock (tmpfiles.d/ci-locks.conf)
+├── tella-runner.service           tella's quadlet; its jobs take the lock exclusively
+└── ups-ci-runner.service          this quadlet: gitea/act_runner, ups-ci-runner-data volume
+    └── job containers (siblings; 4 CPUs, 3 GiB each, two at once; take the lock shared)
+        ├── rocky-10   → rockylinux:10   test job, server RPM  → registry group el/10
+        └── fedora-44  → fedora:44       desktop RPM           → registry group fedora/44
 ```
 
 Jobs run in stock distro images and install what they need with `dnf` first, so there is no
 builder image to maintain.
 
+## The build lock
+
+tella and ups-orchestrator share ci-01, and a tella build (Flutter, up to 6 GB) must not run
+next to ours. Each job's first step takes `/locks/build.lock` (the host's `/run/ci-locks`) with
+`flock` and keeps holding it in the background until the job container is removed:
+
+- tella's job takes it **exclusively** and waits for it at most 10 minutes; tella-runner's
+  `timeout: 25m` covers that wait plus its ~8 minute build.
+- Every ups-orchestrator job takes it **shared**, so the server and desktop builds still run side
+  by side; they wait for it at most 45 minutes, inside this runner's 1 hour timeout.
+
+The lock is released the moment a job ends, whether it succeeded, failed or was cancelled, and
+whoever waits starts right then; the waits are limits, not delays. The holder also lets go after
+the runner's job timeout (`LOCK_HOLD`), so a job container left behind by a runner restart
+cannot keep the lock. A job that runs out of wait
+fails with a message instead of hitting its timeout. If `/locks` is not mounted (act_runner
+silently drops a mount missing from `valid_volumes`), the step fails rather than running
+unlocked.
+
 ## Install the runner
 
-On the runner VM, as the user the runner should live under (not root):
+`srv/` mirrors `/root/srv` on ci-01; `check-runner.sh` and `tmpfiles.d/` sit beside it (keep
+`check-runner.sh` out of `/root/srv`, where tella-runner's own check script lives). Copy
+`packaging/ci/` to ci-01 (no checkout needed there; the repo is only ever checked out inside job
+containers), then, as root in that copy:
 
 ```bash
-sudo dnf install podman
-sudo loginctl enable-linger "$USER"     # keep the user manager running without a login
-# let rootless Podman apply the job containers' --cpus/--memory limits (EL delegates no cpu)
-sudo mkdir -p /etc/systemd/system/user@.service.d
-printf '[Service]\nDelegate=cpu cpuset io memory pids\n' \
-  | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
-sudo systemctl daemon-reload            # then log in again
+# once per VM: the lock directory, shared with tella-runner
+install -m644 tmpfiles.d/ci-locks.conf /etc/tmpfiles.d/ci-locks.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/ci-locks.conf
 
-# copy packaging/ci/ to the VM, then:
-cp runner.env.example runner.env
-$EDITOR runner.env                      # GITEA_INSTANCE_URL + registration token
-./install-runner.sh
-journalctl --user -u ups-ci-runner -f   # "runner registered successfully"
+install -Dm644 srv/conf/ups-ci-runner/config.yaml /root/srv/conf/ups-ci-runner/config.yaml
+install -Dm644 srv/containers/ups-ci-runner.container /root/srv/containers/ups-ci-runner.container
+install -Dm600 srv/env/ups-ci-runner.env.example /root/srv/env/ups-ci-runner.env
+$EDITOR /root/srv/env/ups-ci-runner.env            # GITEA_INSTANCE_URL + registration token
+cp /root/srv/containers/ups-ci-runner.container /etc/containers/systemd/   # as for tella-runner
+
+./check-runner.sh && systemctl daemon-reload && systemctl start ups-ci-runner
+journalctl -u ups-ci-runner -f                      # "runner registered successfully"
 ```
 
 The registration token comes from Gitea → repo (or org/site) **Settings → Actions → Runners →
 Create new runner**. It is used only on the first start; the registration is stored in the
-`ups-ci-runner-data` volume.
-
-`install-runner.sh` enables `podman.socket`, writes `~/.config/ups-ci/{config.yaml,runner.env}`
-and `~/.config/containers/systemd/ups-ci-runner.container`, then starts `ups-ci-runner.service`.
-Labels and job settings live in [`config.yaml`](config.yaml); re-run the script after changing it.
-Each job container is capped at 4 CPUs and 3 GiB RAM with no swap; two run at once
-(`capacity: 2`). A job peaks around 1.1 GiB, so a 4 GB VM is enough.
+`ups-ci-runner-data` volume. Labels, limits and the lock mount live in
+[`config.yaml`](srv/conf/ups-ci-runner/config.yaml); restart the runner after changing it.
 
 Actions must be enabled for the repository (**Settings → Actions**).
 
