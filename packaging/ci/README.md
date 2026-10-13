@@ -38,15 +38,18 @@ unlocked.
 
 ## Install the runner
 
-`srv/` mirrors `/root/srv` on ci-01; `check-runner.sh` and `tmpfiles.d/` sit beside it (keep
-`check-runner.sh` out of `/root/srv`, where tella-runner's own check script lives). Copy
-`packaging/ci/` to ci-01 (no checkout needed there; the repo is only ever checked out inside job
-containers), then, as root in that copy:
+`srv/` mirrors `/root/srv` on ci-01. Beside it are what every runner on the VM shares: the
+lock's `tmpfiles.d/ci-locks.conf` and `check-runner.sh`, one preflight for all runners
+(`check-runner.sh tella-runner`, `check-runner.sh ups-ci-runner`) that reads everything
+runner-specific from the runner's quadlet and `config.yaml`. Copy `packaging/ci/` to ci-01 (no
+checkout needed there; the repo is only ever checked out inside job containers), then, as root
+in that copy:
 
 ```bash
-# once per VM: the lock directory, shared with tella-runner
+# once per VM, shared with tella-runner: the lock directory and the preflight
 install -m644 tmpfiles.d/ci-locks.conf /etc/tmpfiles.d/ci-locks.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/ci-locks.conf
+install -m755 check-runner.sh /root/srv/check-runner.sh
 
 install -Dm644 srv/conf/ups-ci-runner/config.yaml /root/srv/conf/ups-ci-runner/config.yaml
 install -Dm644 srv/containers/ups-ci-runner.container /root/srv/containers/ups-ci-runner.container
@@ -54,14 +57,16 @@ install -Dm600 srv/env/ups-ci-runner.env.example /root/srv/env/ups-ci-runner.env
 $EDITOR /root/srv/env/ups-ci-runner.env            # GITEA_INSTANCE_URL + registration token
 cp /root/srv/containers/ups-ci-runner.container /etc/containers/systemd/   # as for tella-runner
 
-./check-runner.sh && systemctl daemon-reload && systemctl start ups-ci-runner
+/root/srv/check-runner.sh ups-ci-runner && systemctl daemon-reload && systemctl start ups-ci-runner
 journalctl -u ups-ci-runner -f                      # "runner registered successfully"
 ```
 
 The registration token comes from Gitea → repo (or org/site) **Settings → Actions → Runners →
 Create new runner**. It is used only on the first start; the registration is stored in the
 `ups-ci-runner-data` volume. Labels, limits and the lock mount live in
-[`config.yaml`](srv/conf/ups-ci-runner/config.yaml); restart the runner after changing it.
+[`config.yaml`](srv/conf/ups-ci-runner/config.yaml); run the preflight and restart the runner
+after changing it. The preflight FAILs on a `-v` in `container.options` that `valid_volumes` does
+not list, since act_runner would silently drop that mount.
 
 Actions must be enabled for the repository (**Settings → Actions**).
 
