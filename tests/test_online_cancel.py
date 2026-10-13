@@ -1,60 +1,26 @@
-from pathlib import Path
-import sys
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "server" / "app"))
-
-import server
+from ups_context import MODE_IDLE, MODE_MONITORING, PHASE_USER_PROMPT
 
 
-def test_online_should_clear_pending_soft_suspend(monkeypatch):
-    client = server.APP.test_client()
+def test_online_should_clear_pending_ups_state_prompt(api):
+    """Power back while the desktop prompt is still open: the prompt is withdrawn
+    and the orchestrator stands down."""
+    api.primary.save_orchestrator_state({
+        "mode": MODE_MONITORING,
+        "phase": PHASE_USER_PROMPT,
+        "phase_deadline": 9999999999,
+        "onbatt_since": 1,
+        "last_event": "ONBATT",
+    })
+    api.primary.save_command({"id": "state-1", "command": "ups_state", "status": "pending"})
 
-    saved = {}
-    saved_orch = {}
-
-    monkeypatch.setattr(
-        server,
-        "get_desktop_state",
-        lambda: {
-            "status": "online",
-            "last_seen": server.now_ts(),
-        },
-    )
-
-    monkeypatch.setattr(
-        server,
-        "get_command",
-        lambda: {
-            "id": "soft-1",
-            "command": "soft_suspend",
-            "status": "pending",
-        },
-    )
-
-    monkeypatch.setattr(server, "save_command", lambda cmd: saved.update(cmd))
-    monkeypatch.setattr(
-        server, "save_orchestrator_state", lambda orch: saved_orch.update(orch)
-    )
-    monkeypatch.setattr(
-        server,
-        "get_orchestrator_state",
-        lambda: {
-            "mode": "on_battery_waiting",
-            "last_event": "ONBATT",
-            "pending_command": None,
-            "suspend_deadline": server.now_ts() + 300,
-            "updated_at": server.now_ts(),
-        },
-    )
-
-    resp = client.post(
-        "/api/ups/event",
-        headers={"X-UPS-Token": server.SHARED_TOKEN},
+    resp = api.client.post(
+        "/api/ups/server-ups/event",
+        headers=api.headers,
         json={"event": "ONLINE"},
     )
 
     assert resp.status_code == 200
-    assert saved["status"] == "cancelled"
-    assert saved_orch["mode"] == "idle"
-    assert saved_orch["last_event"] == "ONLINE"
+    assert api.primary.get_command()["status"] == "cancelled"
+    orch = api.primary.get_orchestrator_state()
+    assert orch["mode"] == MODE_IDLE
+    assert orch["last_event"] == "ONLINE"

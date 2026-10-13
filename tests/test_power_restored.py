@@ -1,37 +1,26 @@
-from pathlib import Path
-import sys
-import pytest
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "server" / "app"))
-
-import server
+from ups_context import MODE_IDLE, MODE_SHUTTING_DOWN, PHASE_SUSPEND_WAIT
 
 
-def test_online_event_cancels_pending_shutdown(monkeypatch):
-    client = server.APP.test_client()
-    
-    # Track calls
-    monkeypatch.setattr(server, "SHARED_TOKEN", "test-token")
-    
-    # Store mocks
-    commands = {"status": "pending", "command": "critical_shutdown", "id": "test-id"}
-    def mock_save_cmd(cmd): commands.update(cmd)
-    monkeypatch.setattr(server, "save_command", mock_save_cmd)
-    monkeypatch.setattr(server, "get_command", lambda: commands)
-    
-    orch = {"mode": "awaiting_shutdown"}
-    monkeypatch.setattr(server, "get_orchestrator_state", lambda: orch)
-    def mock_save_orch(o): orch.update(o)
-    monkeypatch.setattr(server, "save_orchestrator_state", mock_save_orch)
+def test_online_event_cancels_pending_shutdown(api):
+    """Power back after critical_shutdown was issued but before the desktop ran it:
+    the command is cancelled so the desktop's preflight refuses it."""
+    api.primary.save_orchestrator_state({
+        "mode": MODE_SHUTTING_DOWN,
+        "phase": PHASE_SUSPEND_WAIT,
+        "phase_deadline": 1,
+        "onbatt_since": 1,
+        "last_event": "LOWBATT",
+    })
+    api.primary.save_command({"id": "shutdown-1", "command": "critical_shutdown", "status": "pending"})
 
-    # 1. Trigger ONLINE
-    resp = client.post(
-        "/api/ups/event",
-        headers={"X-UPS-Token": "test-token"},
+    resp = api.client.post(
+        "/api/ups/server-ups/event",
+        headers=api.headers,
         json={"event": "ONLINE"},
     )
+
     assert resp.status_code == 200
-    assert orch["mode"] == "idle"
-    assert commands["status"] == "cancelled"
-    assert commands["result"]["reason"] == "power_restored"
+    assert api.primary.get_orchestrator_state()["mode"] == MODE_IDLE
+    cmd = api.primary.get_command()
+    assert cmd["status"] == "cancelled"
+    assert cmd["result"]["reason"] == "power_restored_event"

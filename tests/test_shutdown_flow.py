@@ -1,51 +1,23 @@
-from pathlib import Path
-import sys
-import pytest
+def test_shutdown_sequence_waits_for_online(api):
+    """LOWBATT with the desktop asleep: wake it, push critical_shutdown only once it
+    reports online, and shut the server down after the desktop confirms."""
+    api.primary.save_desktop_state({"status": "suspended"})
+    # Unreachable at LOWBATT and on the first wake check, then online.
+    api.desktop_replies = [{}, {}, {"status": "online"}]
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "server" / "app"))
-
-import server
-
-
-def test_shutdown_sequence_waits_for_online(monkeypatch):
-    client = server.APP.test_client()
-    
-    # Track calls
-    pushed_commands = []
-    
-    # Mocking
-    monkeypatch.setattr(server, "SHARED_TOKEN", "test-token")
-    monkeypatch.setattr(server, "get_desktop_state", lambda: {"status": "suspended"})
-    monkeypatch.setattr(server, "push_command_to_desktop", lambda cmd: pushed_commands.append(cmd))
-    
-    # Store mocks
-    commands = {}
-    def mock_save_cmd(cmd): commands.update(cmd)
-    monkeypatch.setattr(server, "save_command", mock_save_cmd)
-    monkeypatch.setattr(server, "get_command", lambda: commands)
-    
-    orch = {"mode": "idle"}
-    monkeypatch.setattr(server, "get_orchestrator_state", lambda: orch)
-    def mock_save_orch(o): orch.update(o)
-    monkeypatch.setattr(server, "save_orchestrator_state", mock_save_orch)
-
-    # 1. Trigger LOWBATT
-    resp = client.post(
-        "/api/ups/event",
-        headers={"X-UPS-Token": "test-token"},
+    resp = api.client.post(
+        "/api/ups/server-ups/event",
+        headers=api.headers,
         json={"event": "LOWBATT"},
     )
-    assert resp.status_code == 200
-    assert orch["mode"] == "awaiting_shutdown"
-    assert len(pushed_commands) == 0  # Should NOT push yet because state was suspended
 
-    # 2. Desktop reports "online"
-    resp = client.post(
-        "/api/desktop/update-state",
-        headers={"X-UPS-Token": "test-token"},
-        json={"status": "online", "hostname": "desktop"}
-    )
     assert resp.status_code == 200
-    assert len(pushed_commands) == 1
-    assert pushed_commands[0]["command"] == "critical_shutdown"
+    assert resp.json["shutdown_server"] is True
+    assert api.calls == [
+        ("fetch", None),        # LOWBATT: desktop unreachable → suspend_wait
+        ("wol",),
+        ("fetch", None),        # still asleep: nothing pushed yet
+        ("fetch", "online"),
+        ("push", "critical_shutdown"),
+        ("fsd",),               # desktop reported shutting_down → server goes down
+    ]
