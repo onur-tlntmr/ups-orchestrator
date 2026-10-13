@@ -48,6 +48,19 @@ if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]];
   die "lingering is off for $USER; enable it once with: sudo loginctl enable-linger $USER"
 fi
 
+# Job containers get --cpus/--memory limits (config.yaml); rootless Podman can only apply them
+# when systemd delegates those cgroup controllers to the user, and EL delegates memory but not
+# cpu by default.
+controllers="/sys/fs/cgroup/user.slice/user-$UID.slice/user@$UID.service/cgroup.controllers"
+for controller in cpu memory; do
+  if ! grep -qw "$controller" "$controllers" 2>/dev/null; then
+    die "the '$controller' cgroup controller is not delegated to $USER; enable it once with:
+  sudo mkdir -p /etc/systemd/system/user@.service.d
+  printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+  sudo systemctl daemon-reload   # then log out and back in (or reboot)"
+  fi
+done
+
 if [[ -z "$ENV_FILE" ]]; then
   for candidate in "$STATE/runner.env" "$HERE/runner.env"; do
     [[ -f "$candidate" ]] && { ENV_FILE="$candidate"; break; }

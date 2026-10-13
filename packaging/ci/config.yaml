@@ -20,6 +20,10 @@ container:
   # Empty: act_runner creates a network per job.
   network: ""
   privileged: false
+  # Per job container. memory-swap equal to memory makes 3g a hard ceiling (no swap on top).
+  # A job peaks around 1.1 GiB (dnf metadata); rootless --cpus needs the cpu controller
+  # delegated to the user (install-runner.sh checks).
+  options: "--cpus=4 --memory=3g --memory-swap=3g"
   # "-": find the Podman socket for the runner itself, but do not mount it into job
   # containers — jobs only run dnf, rpmbuild and curl.
   docker_host: "-"

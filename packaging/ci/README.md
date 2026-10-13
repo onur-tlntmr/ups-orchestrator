@@ -22,6 +22,11 @@ On the runner VM, as the user the runner should live under (not root):
 ```bash
 sudo dnf install podman
 sudo loginctl enable-linger "$USER"     # keep the user manager running without a login
+# let rootless Podman apply the job containers' --cpus/--memory limits (EL delegates no cpu)
+sudo mkdir -p /etc/systemd/system/user@.service.d
+printf '[Service]\nDelegate=cpu cpuset io memory pids\n' \
+  | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+sudo systemctl daemon-reload            # then log in again
 
 # copy packaging/ci/ to the VM, then:
 cp runner.env.example runner.env
@@ -37,6 +42,8 @@ Create new runner**. It is used only on the first start; the registration is sto
 `install-runner.sh` enables `podman.socket`, writes `~/.config/ups-ci/{config.yaml,runner.env}`
 and `~/.config/containers/systemd/ups-ci-runner.container`, then starts `ups-ci-runner.service`.
 Labels and job settings live in [`config.yaml`](config.yaml); re-run the script after changing it.
+Each job container is capped at 4 CPUs and 3 GiB RAM with no swap; two run at once
+(`capacity: 2`). A job peaks around 1.1 GiB, so a 4 GB VM is enough.
 
 Actions must be enabled for the repository (**Settings → Actions**).
 
