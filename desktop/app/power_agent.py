@@ -9,7 +9,7 @@ import logging
 import logging.handlers
 import requests
 from pydbus import SystemBus
-from gi.repository import GLib
+from gi.repository import Gio, GLib
 
 # Add current directory to path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -87,12 +87,29 @@ class PowerAgent:
             self.release_delay_lock()
 
         try:
-            self.inhibit_fd = self.login1.Inhibit(
-                "sleep:shutdown",
-                "ups-orchestrator",
-                "Run state updates before sleep/shutdown",
-                "delay",
+            # Not through pydbus: for an fd ('h') reply it returns only the fd's
+            # index in the message and drops the fd itself, so logind releases the
+            # lock at once (and we would later close fd 0, i.e. stdin).
+            reply, fds = self.bus.con.call_with_unix_fd_list_sync(
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+                "Inhibit",
+                GLib.Variant("(ssss)", (
+                    "sleep:shutdown",
+                    "ups-orchestrator",
+                    "Run state updates before sleep/shutdown",
+                    "delay",
+                )),
+                GLib.VariantType("(h)"),
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None,
+                None,
             )
+            # steal_fds() hands the fd over; get() would return a dup and leave the
+            # list's own copy holding the lock until the list is garbage-collected.
+            self.inhibit_fd = fds.steal_fds()[reply.unpack()[0]]
             logger.info(f"Delay inhibitor acquired, fd={self.inhibit_fd}")
         except Exception as e:
             logger.error(f"Failed to acquire inhibitor: {e}")
