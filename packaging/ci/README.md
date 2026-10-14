@@ -102,13 +102,16 @@ instance key (`?sign=true`); only the newest 3 versions of each package are kept
 
 ## Clients
 
-Each machine points at its own group; the `.repo` file is printed at the end of every publish:
+Each machine points at its own group; the `.repo` file is printed at the end of every publish.
+Groups are prefixed with the repository name, because Gitea has one RPM registry per owner and
+tella publishes to the same owner's `fedora/44`; without the prefix each project's `.repo` would
+serve the other's packages.
 
 ```ini
 # /etc/yum.repos.d/ups-orchestrator.repo
 [ups-orchestrator]
 name=UPS Orchestrator
-baseurl=https://<instance>/api/packages/<owner>/rpm/el/10      # desktop: fedora/44
+baseurl=https://<instance>/api/packages/<owner>/rpm/ups-orchestrator/el/10      # desktop: ups-orchestrator/fedora/44
 enabled=1
 gpgcheck=1
 gpgkey=https://<instance>/api/packages/<owner>/rpm/repository.key

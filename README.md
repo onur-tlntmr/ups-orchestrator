@@ -241,16 +241,17 @@ Both components are published as RPMs to the Gitea package registry by CI (see
 
 | Package | Installed on | Repository group |
 |---|---|---|
-| `ups-orchestrator-server` | the NUT host (Rocky Linux 10, needs EPEL) | `el/10` |
-| `ups-orchestrator-desktop` | the desktop (Fedora 44) | `fedora/44` |
+| `ups-orchestrator-server` | the NUT host (Rocky Linux 10, needs EPEL) | `ups-orchestrator/el/10` |
+| `ups-orchestrator-desktop` | the desktop (Fedora 44) | `ups-orchestrator/fedora/44` |
 
-Add the repository once (replace `<instance>`, `<owner>` and the group):
+The `ups-orchestrator/` prefix keeps the group apart from the owner's other projects (Gitea has
+one registry per owner). Add the repository once (replace `<instance>`, `<owner>` and the group):
 
 ```ini
 # /etc/yum.repos.d/ups-orchestrator.repo
 [ups-orchestrator]
 name=UPS Orchestrator
-baseurl=https://<instance>/api/packages/<owner>/rpm/el/10
+baseurl=https://<instance>/api/packages/<owner>/rpm/ups-orchestrator/el/10
 enabled=1
 gpgcheck=1
 gpgkey=https://<instance>/api/packages/<owner>/rpm/repository.key

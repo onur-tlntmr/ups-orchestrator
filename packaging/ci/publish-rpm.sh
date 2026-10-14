@@ -3,9 +3,12 @@
 # desktop upgrade with `dnf upgrade` instead of a hand-copied file. Adapted from tella's
 # packaging/ci/publish-rpm.sh.
 #
-# The repository group is the path clients point at, and it comes from each RPM's own dist tag
-# (`…-1.el10` → `el/10`, `…-1.fc44` → `fedora/44`): a package built for one distro must not be
-# served from another's repository, where its dependencies would not resolve. --group= overrides.
+# The repository group is the path clients point at: the repository name, then the distro from
+# each RPM's own dist tag (`…-1.el10` → `ups-orchestrator/el/10`, `…-1.fc44` →
+# `ups-orchestrator/fedora/44`). The distro part keeps a package built for one distro out of
+# another's repository, where its dependencies would not resolve; --group= overrides it. The
+# name part keeps it out of the owner's other projects' repositories: Gitea has one registry per
+# owner, so tella's `fedora/44` would otherwise serve these packages too.
 #
 # Uploaded with ?sign=true: Gitea signs with the instance key only when asked, while the .repo
 # file it generates says gpgcheck=1. A version that is already there (409) is replaced, so a
@@ -18,7 +21,7 @@
 #   GITEA_USER      the user the token belongs to (default: $GITHUB_ACTOR, else the owner)
 #
 # Usage:
-#   packaging/ci/publish-rpm.sh --dir=dist --version=0.1.0 [--keep=3] [--group=el/10]
+#   packaging/ci/publish-rpm.sh --dir=dist --version=0.1.0 [--keep=3] [--group=el/10]   # → <repo>/el/10
 #   packaging/ci/publish-rpm.sh --dir=dist --version=0.1.0 --dry-run
 set -euo pipefail
 
@@ -38,7 +41,7 @@ for arg in "$@"; do
     --group=*)   GROUP="${arg#*=}" ;;
     --keep=*)    KEEP="${arg#*=}" ;;
     --dry-run)   DRY_RUN=1 ;;
-    -h|--help)   sed -n '2,23p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -54,6 +57,8 @@ log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 API="${API%/}"
 # Package paths are lowercase; repository owners are not necessarily.
 OWNER="$(printf '%s' "${REPO%%/*}" | tr '[:upper:]' '[:lower:]')"
+PROJECT="$(printf '%s' "${REPO#*/}" | tr '[:upper:]' '[:lower:]')"
+[[ "$REPO" == */* && -n "$PROJECT" ]] || die "GITEA_REPO / GITHUB_REPOSITORY must be owner/repo (got: $REPO)"
 [[ -n "$USER_NAME" ]] || USER_NAME="$OWNER"
 command -v rpm >/dev/null 2>&1 || die "rpm not found"
 
@@ -80,6 +85,7 @@ for rpm in "${rpms[@]}"; do
       die "cannot derive a repository group from release '$pkg_release'; pass --group="
     fi
   fi
+  group="$PROJECT/$group"
   names+=("$name"); nvrs+=("$pkg_version-$pkg_release"); arches+=("$arch"); groups+=("$group")
 done
 
