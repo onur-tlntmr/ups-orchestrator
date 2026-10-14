@@ -523,8 +523,10 @@ The system `python3` usually has no pytest, so run the tests from a venv:
 ```bash
 python3 -m venv .venv-test
 .venv-test/bin/python -m pip install -r requirements-test.txt
-.venv-test/bin/python -m pytest -q tests/
+.venv-test/bin/python -m pytest -q -n auto tests/
 ```
+`-n auto` spreads the tests over one worker process per CPU (pytest-xdist); drop it to run them
+serially.
 
 CI (`.gitea/workflows/ci.yml`) does not run on branch pushes, so run the tests locally before
 tagging. A `v*` tag matching `Version:` in `packaging/rpm/ups-orchestrator.spec` runs the tests,

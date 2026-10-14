@@ -57,13 +57,13 @@ jobs:
         run: |
           dnf -y -q install epel-release
           dnf -y -q --enablerepo=crb install git nodejs curl tzdata \
-            python3-pytest python3-flask python3-requests python3-pyyaml
+            python3-pytest python3-pytest-xdist python3-flask python3-requests python3-pyyaml
 
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Test
-        run: python3 -m pytest -q tests/
+        run: python3 -m pytest -q -n auto tests/
 
   package:
     needs: test
