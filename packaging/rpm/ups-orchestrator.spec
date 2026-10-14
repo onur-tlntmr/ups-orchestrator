@@ -6,7 +6,7 @@
 %bcond desktop 1
 
 Name:           ups-orchestrator
-Version:        0.5.0
+Version:        0.5.1
 Release:        1%{?dist}
 Summary:        Coordinates server and desktop shutdowns during UPS power events
 License:        MIT
@@ -148,6 +148,10 @@ install -Dpm644 desktop/.env.example %{buildroot}%{_sysconfdir}/%{name}/desktop.
 %endif
 
 %changelog
+* Wed Oct 14 2026 Onur T. <onur@tatimur.com> - 0.5.1-1
+- desktop: the power agent really holds its sleep/shutdown delay lock, so the
+  desktop reports 'suspended' to the server before it goes to sleep
+
 * Tue Oct 13 2026 Onur T. <onur@tatimur.com> - 0.5.0-1
 - TODO: describe this release.
 
