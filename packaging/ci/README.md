@@ -1,7 +1,8 @@
 # ups-orchestrator CI — Gitea Actions on ci-01
 
-[`.gitea/workflows/ci.yml`](../../.gitea/workflows/ci.yml) tests every push and, on a `v*` tag,
-builds each RPM on the distro it is installed on and publishes it to the instance's RPM registry.
+[`.gitea/workflows/ci.yml`](../../.gitea/workflows/ci.yml) runs on a `v*` tag or a manual run, not
+on branch pushes: it tests, then builds each RPM on the distro it is installed on and, on a tag,
+publishes it to the instance's RPM registry.
 
 ```text
 ci-01 (Rocky Linux 10, rootful Podman, files under /root/srv)

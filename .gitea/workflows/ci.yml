@@ -1,12 +1,12 @@
-# Tests every push; on a v* tag also builds the two RPMs, each on the distro it is installed on,
-# and publishes them to the instance's RPM registry. Runs on ups-ci-runner on ci-01 (packaging/ci/;
-# labels rocky-10 and fedora-44 are stock distro images, so each job installs what it needs
-# first), and waits for tella's builds on the same VM through a shared build lock.
+# On a v* tag or a manual run, tests, then builds the two RPMs, each on the distro it is installed
+# on; only a tag publishes them to the instance's RPM registry. Branch pushes run nothing. Runs on
+# ups-ci-runner on ci-01 (packaging/ci/; labels rocky-10 and fedora-44 are stock distro images, so
+# each job installs what it needs first), and waits for tella's builds on the same VM through a
+# shared build lock.
 name: ci
 
 on:
   push:
-    branches: [master]
     tags: ["v*"]
   workflow_dispatch:
 

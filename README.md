@@ -526,8 +526,9 @@ python3 -m venv .venv-test
 .venv-test/bin/python -m pytest -q tests/
 ```
 
-CI (`.gitea/workflows/ci.yml`) runs the tests on every push; a `v*` tag matching `Version:` in
-`packaging/rpm/ups-orchestrator.spec` also builds and publishes both RPMs. `tools/set-version.sh`
+CI (`.gitea/workflows/ci.yml`) does not run on branch pushes, so run the tests locally before
+tagging. A `v*` tag matching `Version:` in `packaging/rpm/ups-orchestrator.spec` runs the tests,
+then builds and publishes both RPMs. `tools/set-version.sh`
 sets that version and prints the commit and tag commands (see
 [packaging/ci/README.md](packaging/ci/README.md#release)).
 
